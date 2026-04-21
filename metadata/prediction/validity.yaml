@@ -1,0 +1,11 @@
+# Validity mapping for prediction configs
+# Format: config_file: [list of groups that use this config]
+
+mlgroup001.yaml:
+  - mlgroup001
+  - mlgroup002
+  - mlgroup003
+  - mlgroup004
+
+
+  

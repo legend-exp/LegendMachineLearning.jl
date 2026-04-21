@@ -1,0 +1,34 @@
+# mlgroup001 — p16, DetConcatMLP
+mlp_detector_concat:
+  input:
+    sipm:
+      features:
+        - sipm_pe_sums_prompt_scaled
+        - sipm_pe_sums_delayed_scaled
+        - cos_proximity
+      layout: by_channel
+      ordering:
+        enabled: true
+        groups: [IB_top, IB_bottom, OB_top, OB_bottom]
+    hpge:
+      enabled: true
+      features: [scaled_angle, scaled_z_center]
+      output_dim: 16
+      hidden_width: 32
+      concat_after_layers: 0
+  architecture:
+    hidden_widths: [512, 256, 128]
+    activation: relu
+    dropout: 0.222
+    batch_norm: true
+  training:
+    epochs: 350
+    batch_size: 512
+    learning_rate: 5.315e-4
+    weight_decay: 3.36e-4
+    optimizer: adamw
+    seed: 1234
+    early_stopping_patience: 50
+    lr_scheduler: cosine
+    lr_min: 1.0e-6
+    warmup_timeout: 300

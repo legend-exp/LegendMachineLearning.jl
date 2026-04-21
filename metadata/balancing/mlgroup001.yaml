@@ -1,0 +1,14 @@
+# Balancing configuration for mlgroup001
+#
+# Reads windowed PE data from jlext (:wpe group, written by process_extraction).
+# Produces jlbal (inference, all events) and jlbalml (training, balanced).
+
+# Training event filter: exclude events matching these rules from jlbalml.
+# Events that pass all filters are balanced for ML training.
+ml_training_exclusion:
+  - key: event_sum_pe
+    range: "<=0.5"
+
+# Pass-through datasets: written to jlbal with real detector IDs, no balancing.
+pass_through:
+  - physics

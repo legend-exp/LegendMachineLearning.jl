@@ -1,0 +1,59 @@
+# Extraction configuration for ML-based LAr Veto — mlgroup001
+# Unified: event filter + keys + time windows per dataset.
+
+excluded_ged_detectors: []  
+# No detectors excluded for this ML group
+datasets:
+  training:
+    sub500keV:
+      event_filter: "!aux.pulser.aux_trig && !aux.forcedtrigger.aux_trig && ged_pmt.is_valid_muon && geds.is_valid_trig && geds.is_valid_qc && geds.is_valid_hit && geds.multiplicity == 1 && geds.max_e_cusp_ctc_cal < 500u\"keV\""
+      keys:
+        spms: [detector, trig_max_trap_cal, trig_pos_trap, trig_max_trap_is_dc]
+        geds: [detector, max_e_cusp_ctc_cal, t0_start, max_e_det_idxs]
+      spms_keys: {pe_cal: trig_max_trap_cal, trig_pos: trig_pos_trap, is_dc: trig_max_trap_is_dc}
+      summed_trigger_time_window:
+        full:    {reference: ged_t0, before_us: 1.0, after_us: 5.0}
+        prompt:  {reference: ged_t0, before_us: 1.0, after_us: 1.0}
+        delayed: {reference: ged_t0, before_us: -1.0, after_us: 5.0}
+      unique_trigger_time_window:
+        reference: ged_t0
+        before_us: 10.0
+        after_us: 10.0
+      trigger_threshold_pe: 0.6
+      multiplicity_threshold_pe: 0.6
+
+    forcedtrigger:
+      event_filter: "!aux.pulser.aux_trig && aux.forcedtrigger.aux_trig"
+      keys:
+        spms: [detector, trig_max_trap_cal, trig_pos_trap, trig_max_trap_is_dc]
+        geds: [detector]
+      spms_keys: {pe_cal: trig_max_trap_cal, trig_pos: trig_pos_trap, is_dc: trig_max_trap_is_dc}
+      summed_trigger_time_window:
+        full:    {reference: fixed, center_us: 47.0, before_us: 1.0, after_us: 5.0}
+        prompt:  {reference: fixed, center_us: 47.0, before_us: 1.0, after_us: 1.0}
+        delayed: {reference: fixed, center_us: 47.0, before_us: -1.0, after_us: 5.0}
+      unique_trigger_time_window:
+        reference: fixed
+        center_us: 47.0
+        before_us: 10.0
+        after_us: 10.0
+      trigger_threshold_pe: 0.6
+      multiplicity_threshold_pe: 0.6
+
+  physics:
+    physics:
+      event_filter: "!aux.pulser.aux_trig && !aux.forcedtrigger.aux_trig && ged_pmt.is_valid_muon && geds.is_valid_trig && geds.is_valid_qc && geds.is_valid_hit && geds.multiplicity == 1 && geds.max_e_cusp_ctc_cal >= 25u\"keV\" && geds.max_e_cusp_ctc_cal < 5500u\"keV\""
+      keys:
+        spms: [detector, trig_max_trap_cal, trig_pos_trap, trig_max_trap_is_dc]
+        geds: [detector, max_e_cusp_ctc_cal, t0_start, max_e_det_idxs]
+      spms_keys: {pe_cal: trig_max_trap_cal, trig_pos: trig_pos_trap, is_dc: trig_max_trap_is_dc}
+      summed_trigger_time_window:
+        full:    {reference: ged_t0, before_us: 1.0, after_us: 5.0}
+        prompt:  {reference: ged_t0, before_us: 1.0, after_us: 1.0}
+        delayed: {reference: ged_t0, before_us: -1.0, after_us: 5.0}
+      unique_trigger_time_window:
+        reference: ged_t0
+        before_us: 10.0
+        after_us: 10.0
+      trigger_threshold_pe: 0.6
+      multiplicity_threshold_pe: 0.6

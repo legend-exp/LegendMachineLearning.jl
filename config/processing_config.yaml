@@ -1,0 +1,62 @@
+# ML-based LAr Veto Processing Configuration
+
+# Plot settings
+plots:
+  preliminary: false   # show PRELIMINARY watermark on all plots
+
+# Environment variables
+env_variables:
+  GKSwstype: "100"
+  JULIA_DEBUG: "Main"
+  JULIA_WORKER_TIMEOUT: "240"
+  JULIA_CUDA_MEMORY_POOL: "none"
+
+# Dataset groups for ML training
+datasets:
+  active_group: mlgroup001
+
+# Processors configuration
+# Order: geometry → extraction → balancing → normalization → training → prediction 
+processors:
+  process_geometry:
+    enabled: false
+    rank: 1
+    dependencies: []
+
+  process_extraction:
+    enabled: false
+    n_workers: 10 
+    threads_per_worker: 6
+    fk_batch_size: 40 
+    rank: 2
+    dependencies: []
+
+  process_balancing:
+    enabled: false
+    rank: 3
+    dependencies:
+      - process_extraction
+
+  process_normalization:
+    enabled: false
+    rank: 4
+    dependencies:
+      - process_balancing
+      - process_geometry
+
+  process_training:
+    enabled: false
+    rank: 5
+    dependencies:
+      - process_normalization
+    kwargs:
+      model: mlp_detector_concat
+
+  process_prediction:
+    enabled: true
+    rank: 6
+    dependencies:
+      - process_training
+    kwargs:
+      model: mlp_detector_concat
+      selection: 1

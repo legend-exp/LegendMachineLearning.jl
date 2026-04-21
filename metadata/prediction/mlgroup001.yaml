@@ -1,0 +1,13 @@
+# Prediction configuration for this ML group
+# Threshold method: ft_matched_4x4_survival | k40_matched_4x4_survival
+threshold_method: ft_matched_4x4_survival
+
+# Hard classification rules applied BEFORE model inference on full-window event_sum_pe.
+# Events matching a rule get the fixed prediction; all others go through the NN.
+hard_classification:
+  - prediction: 0.0
+    key: event_sum_pe
+    range: 0
+  - prediction: 1.0
+    key: event_sum_pe
+    range: ">=15"

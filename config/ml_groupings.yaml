@@ -1,0 +1,72 @@
+# ML Training Dataset Groupings
+# Similar structure to cal_groupings.yaml in legend-metadata
+# Defines which periods and runs belong to each ML training group
+
+# Period 16 only (55 SiPMs)
+mlgroup001:
+  p16:
+    - r000
+    - r001
+    - r002
+    - r003
+    - r004
+    - r005
+    - r006
+
+# Period 18 only (58 SiPMs)
+mlgroup002:
+  p18:
+    - r000
+    - r001
+    - r002
+    - r003
+    - r004
+    - r005
+
+# Period 19 only (58 SiPMs)
+mlgroup003:
+  p19:
+    - r000
+    - r001
+    - r002
+    - r003
+    - r004
+    - r005
+    - r006
+
+
+mlgroup004:
+  p16:
+    - r000
+    - r001
+    - r002
+    - r003
+    - r004
+    - r005
+    - r006
+  p18:
+    - r000
+    - r001
+    - r002
+    - r003
+    - r004
+    - r005
+  p19:
+    - r000
+    - r001
+    - r002
+    - r003
+    - r004
+    - r005
+    - r006
+
+mlgroup005:
+  p16:
+    - r000
+    - r001
+    - r002
+    - r003
+    - r004
+    - r005
+    - r006
+
