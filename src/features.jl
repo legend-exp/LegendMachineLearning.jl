@@ -3,19 +3,25 @@
 # Provides:
 #   - load_training_split(path, cfg) — load LH5 split, columns determined by config
 #   - load_prediction_tier(path, tier_key, cfg) — load LH5 tier for prediction
-#   - assemble_features(data, cfg, sipm_perm) → (x_sipm, x_det, y)
+#   - assemble_features(data, cfg, sipm_perm) → NamedTuple of input arrays
 #   - build_sipm_ordering(sids, geometry_base, group_name) → (perm, ordered_names)
 #   - resolve_input_features(cfg) — extract input_features from config
+#   - resolve_geometry_features(cfg) / resolve_trigger_config(cfg)
 #
 # Config layout (unwrapped — no top-level architecture key):
 #   input:
 #     sipm:
-#       features: [sipm_pe_sums_prompt_scaled, ...]
+#       features: [sipm_pe_sums_prompt_scaled, ...]   # MLP path (per-SiPM scalars)
+#       geometry: [cos_proximity, scaled_delta_z]     # set-model path (per-SiPM geometry)
 #       layout: by_channel
 #       ordering: {enabled: true, groups: [...]}
+#     triggers:                                        # set-model path
+#       features: [trig_time_scaled, trig_pe_scaled]
+#       max_per_sipm: 16
+#       pad_value: 0.0
 #     hpge:
 #       enabled: true
-#       features: [ged_angle_norm, ged_z_center_norm]
+#       features: [scaled_angle, scaled_z_center]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Input feature resolution
@@ -34,8 +40,7 @@ function resolve_input_features(cfg::Dict)
     sc = ic["sipm"]
     hc = get(ic, "hpge", Dict())
 
-    sipm_feats = String.(sc["features"])
-    isempty(sipm_feats) && error("input.sipm.features must not be empty")
+    sipm_feats = String.(get(sc, "features", String[]))
 
     det_feats = if Bool(get(hc, "enabled", false)) && haskey(hc, "features")
         String.(hc["features"])
@@ -44,6 +49,33 @@ function resolve_input_features(cfg::Dict)
     end
 
     return sipm_feats, det_feats
+end
+
+"""
+    resolve_geometry_features(cfg::Dict) → Vector{String}
+
+Per-SiPM geometry features (e.g. `cos_proximity`, `scaled_delta_z`) consumed
+by set-style models. Empty if not configured.
+"""
+function resolve_geometry_features(cfg::Dict)
+    sc = cfg["input"]["sipm"]
+    String.(get(sc, "geometry", String[]))
+end
+
+"""
+    resolve_trigger_config(cfg::Dict) → NamedTuple or nothing
+
+Trigger-sequence config block. Returns `nothing` if not present.
+"""
+function resolve_trigger_config(cfg::Dict)
+    haskey(cfg["input"], "triggers") || return nothing
+    tc = cfg["input"]["triggers"]
+    feats = String.(get(tc, "features", ["trig_time_scaled", "trig_pe_scaled"]))
+    return (
+        features    = feats,
+        max_per_sipm = Int(get(tc, "max_per_sipm", 16)),
+        pad_value   = Float32(get(tc, "pad_value", 0.0)),
+    )
 end
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,13 +110,19 @@ Returns a NamedTuple with:
 """
 function load_training_split(path::String, cfg::Dict)
     sipm_feats, det_feats = resolve_input_features(cfg)
+    geom_feats = resolve_geometry_features(cfg)
+    trig_cfg   = resolve_trigger_config(cfg)
 
     tbl  = lh5open(path, "r") do f; f["jlnormml"][:]; end
     sids = lh5open(path, "r") do f; f["sipm_detector_ids"][:]; end
     n  = length(tbl)
-    ns = length(first(getproperty(tbl, Symbol(first(sipm_feats)))))
+    # Determine per-SiPM count from any per-SiPM column (sipm_feats or geom_feats)
+    probe_feat = !isempty(sipm_feats) ? first(sipm_feats) :
+                 !isempty(geom_feats) ? first(geom_feats) :
+                 error("config has neither input.sipm.features nor input.sipm.geometry")
+    ns = length(first(getproperty(tbl, Symbol(probe_feat))))
 
-    # Load SiPM features (VoV → Matrix)
+    # Load SiPM scalar features (per-event vectors of length n_sipm → Matrix)
     sipm = Dict{String, Matrix{Float32}}()
     for feat in sipm_feats
         col = Symbol(feat)
@@ -92,7 +130,15 @@ function load_training_split(path::String, cfg::Dict)
         sipm[feat] = _vov_to_matrix(getproperty(tbl, col), n, ns)
     end
 
-    # Load detector features (scalar columns)
+    # Load per-SiPM geometry features (set-model branch)
+    geom = Dict{String, Matrix{Float32}}()
+    for feat in geom_feats
+        col = Symbol(feat)
+        hasproperty(tbl, col) || error("Column :$col not found in $path (geometry: $feat)")
+        geom[feat] = _vov_to_matrix(getproperty(tbl, col), n, ns)
+    end
+
+    # Load detector features (per-event scalar columns)
     det = Dict{String, Vector{Float32}}()
     for feat in det_feats
         col = Symbol(feat)
@@ -100,7 +146,28 @@ function load_training_split(path::String, cfg::Dict)
         det[feat] = Float32.(getproperty(tbl, col))
     end
 
-    return (sipm = sipm, det = det, y = Float32.(tbl.label),
+    # Load per-event trigger VoVs (set-model branch). VoVs come back as
+    # AbstractVector{<:AbstractVector{T}} from LegendHDF5IO; we keep them
+    # ragged here and pad later in `assemble_trigger_tensor`.
+    trig = nothing
+    if trig_cfg !== nothing
+        col_ids = :trig_det_ids
+        hasproperty(tbl, col_ids) || error("Column :trig_det_ids not in $path (required for triggers)")
+        trig_data = Dict{String, AbstractVector}()
+        for feat in trig_cfg.features
+            col = Symbol(feat)
+            hasproperty(tbl, col) || error("Column :$col not found in $path (trigger feature: $feat)")
+            trig_data[feat] = getproperty(tbl, col)
+        end
+        trig = (
+            features = trig_cfg.features,
+            data     = trig_data,                       # Dict{name → VoV{Float32}}
+            det_ids  = getproperty(tbl, col_ids),       # VoV{UInt32}
+        )
+    end
+
+    return (sipm = sipm, geom = geom, det = det, trig = trig,
+            y = Float32.(tbl.label),
             sids = Vector{UInt32}(sids), n = n)
 end
 
@@ -116,11 +183,16 @@ prediction-specific columns (event_sum_pe, event_multiplicity, energy, etc.).
 """
 function load_prediction_tier(path::String, tier_key::String, cfg::Dict)
     sipm_feats, det_feats = resolve_input_features(cfg)
+    geom_feats = resolve_geometry_features(cfg)
+    trig_cfg   = resolve_trigger_config(cfg)
 
     tbl  = lh5open(path, "r") do f; f[tier_key][:]; end
     sids = lh5open(path, "r") do f; f["sipm_detector_ids"][:]; end
     n  = length(tbl)
-    ns = length(first(getproperty(tbl, Symbol(first(sipm_feats)))))
+    probe_feat = !isempty(sipm_feats) ? first(sipm_feats) :
+                 !isempty(geom_feats) ? first(geom_feats) :
+                 error("config has neither input.sipm.features nor input.sipm.geometry")
+    ns = length(first(getproperty(tbl, Symbol(probe_feat))))
 
     sipm = Dict{String, Matrix{Float32}}()
     for feat in sipm_feats
@@ -129,11 +201,33 @@ function load_prediction_tier(path::String, tier_key::String, cfg::Dict)
         sipm[feat] = _vov_to_matrix(getproperty(tbl, col), n, ns)
     end
 
+    geom = Dict{String, Matrix{Float32}}()
+    for feat in geom_feats
+        col = Symbol(feat)
+        hasproperty(tbl, col) || error("Column :$col not found in $path (geometry: $feat)")
+        geom[feat] = _vov_to_matrix(getproperty(tbl, col), n, ns)
+    end
+
     det = Dict{String, Vector{Float32}}()
     for feat in det_feats
         col = Symbol(feat)
         hasproperty(tbl, col) || error("Column :$col not found in $path (feature: $feat)")
         det[feat] = Float32.(getproperty(tbl, col))
+    end
+
+    trig = nothing
+    if trig_cfg !== nothing && hasproperty(tbl, :trig_det_ids)
+        trig_data = Dict{String, AbstractVector}()
+        for feat in trig_cfg.features
+            col = Symbol(feat)
+            hasproperty(tbl, col) || error("Column :$col not found in $path (trigger feature: $feat)")
+            trig_data[feat] = getproperty(tbl, col)
+        end
+        trig = (
+            features = trig_cfg.features,
+            data     = trig_data,
+            det_ids  = getproperty(tbl, :trig_det_ids),
+        )
     end
 
     has_label = hasproperty(tbl, :label)
@@ -158,7 +252,8 @@ function load_prediction_tier(path::String, tier_key::String, cfg::Dict)
     pe_prompt  = get(sipm, "sipm_pe_sums_prompt_scaled", nothing)
     pe_delayed = get(sipm, "sipm_pe_sums_delayed_scaled", nothing)
 
-    return (sipm = sipm, det = det, y = y, sids = Vector{UInt32}(sids), n = n,
+    return (sipm = sipm, geom = geom, det = det, trig = trig, y = y,
+            sids = Vector{UInt32}(sids), n = n,
             has_label = has_label, ged_energy_keV = energy,
             event_sum_pe       = Float32.(tbl.event_sum_pe),
             event_multiplicity = Int32.(tbl.event_multiplicity),
@@ -232,13 +327,85 @@ function assemble_det_matrix(data::NamedTuple, cfg::Dict)
 end
 
 """
-    assemble_features(data, cfg, sipm_perm) → (x_sipm, x_det)
+    assemble_geometry_tensor(data, cfg, sipm_perm) → Array{Float32,3} | nothing
 
-Convenience wrapper: build both SiPM and detector feature matrices.
+Per-SiPM geometry features stacked into a `(G × n_sipm × n_events)` tensor.
+Returns `nothing` if no geometry features are configured.
+"""
+function assemble_geometry_tensor(data::NamedTuple, cfg::Dict,
+                                  sipm_perm::Union{Vector{Int}, Nothing})
+    geom_feats = resolve_geometry_features(cfg)
+    isempty(geom_feats) && return nothing
+    n  = data.n
+    ns = size(first(values(data.geom)), 2)
+    G  = length(geom_feats)
+    out = Array{Float32, 3}(undef, G, ns, n)
+    for (gi, feat) in enumerate(geom_feats)
+        M = data.geom[feat]                            # (n × ns)
+        if sipm_perm !== nothing
+            M = M[:, sipm_perm]
+        end
+        # M is (n × ns); we want (G × ns × n)
+        @inbounds for e in 1:n, s in 1:ns
+            out[gi, s, e] = M[e, s]
+        end
+    end
+    return out
+end
+
+"""
+    assemble_trigger_tensor(data, cfg, sipm_perm) → (X, mask) | nothing
+
+Build the dense trigger tensor `X::(F × max_K × n_sipm × n_events)` and
+`mask::(max_K × n_sipm × n_events)` from ragged per-event trigger VoVs.
+
+Returns `nothing` if `cfg["input"]["triggers"]` is not configured.
+"""
+function assemble_trigger_tensor(data::NamedTuple, cfg::Dict,
+                                 sipm_perm::Union{Vector{Int}, Nothing})
+    trig_cfg = resolve_trigger_config(cfg)
+    trig_cfg === nothing && return nothing
+    data.trig === nothing && error("trigger data not loaded — re-load split with trigger config")
+
+    n_sipm = length(data.sids)
+
+    # Map raw detector IDs in trig_det_ids to slot indices in 1..n_sipm
+    slot_lists = detid_to_slot(data.trig.det_ids, data.sids, sipm_perm)
+
+    # Pack feature VoVs into a tuple so pad_per_sipm_triggers can iterate them.
+    fv = Tuple(data.trig.data[feat] for feat in trig_cfg.features)
+    X, M = pad_per_sipm_triggers(fv, slot_lists,
+                                 trig_cfg.max_per_sipm, n_sipm;
+                                 pad_value = trig_cfg.pad_value)
+    return (X, M)
+end
+
+"""
+    assemble_features(data, cfg, sipm_perm) → NamedTuple
+
+Build all input arrays needed by any registered architecture. Architectures
+pull from this NamedTuple via `Lux.apply(model, inputs, ps, st)`. Keys present
+in the output:
+  - sipm  :: Matrix{Float32} (features × samples) — MLP-style SiPM features
+  - det   :: Matrix{Float32} (n_det × samples)    — HPGe scalars
+  - geom  :: Array{Float32, 3} (G × n_sipm × samples) | nothing
+  - trig  :: Array{Float32, 4} (F × max_K × n_sipm × samples) | nothing
+  - mask  :: Array{Bool, 3} (max_K × n_sipm × samples) | nothing
+
+Empty matrices are still returned for `sipm`/`det` so old code paths keep
+working — set-only models simply ignore those.
 """
 function assemble_features(data::NamedTuple, cfg::Dict,
                            sipm_perm::Union{Vector{Int}, Nothing})
-    return assemble_sipm_matrix(data, cfg, sipm_perm), assemble_det_matrix(data, cfg)
+    sipm_feats = resolve_input_features(cfg)[1]
+    x_sipm = isempty(sipm_feats) ? Matrix{Float32}(undef, 0, data.n) :
+                                    assemble_sipm_matrix(data, cfg, sipm_perm)
+    x_det  = assemble_det_matrix(data, cfg)
+    x_geom = assemble_geometry_tensor(data, cfg, sipm_perm)
+    trig_pair = assemble_trigger_tensor(data, cfg, sipm_perm)
+    x_trig = trig_pair === nothing ? nothing : trig_pair[1]
+    x_mask = trig_pair === nothing ? nothing : trig_pair[2]
+    return (sipm = x_sipm, det = x_det, geom = x_geom, trig = x_trig, mask = x_mask)
 end
 
 # ══════════════════════════════════════════════════════════════════════════════

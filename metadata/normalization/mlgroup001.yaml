@@ -12,17 +12,17 @@
 
 scaling:
   sipm_pe_sums:
-    - clip: [0, 15]
+    - clip: [0, 20]
     - transform: log1p
-    - normalize: {method: minmax, range: [0, 1], exclude_zero: true}
+    - normalize: {method: minmax, range: [0, 1], exclude_zero: false}
   sipm_pe_sums_prompt:
-    - clip: [0, 15]
+    - clip: [0, 20]
     - transform: log1p
-    - normalize: {method: minmax, range: [0, 1], exclude_zero: true}
+    - normalize: {method: minmax, range: [0, 1], exclude_zero: false}
   sipm_pe_sums_delayed:
-    - clip: [0, 15]
+    - clip: [0, 20]
     - transform: log1p
-    - normalize: {method: minmax, range: [0, 1], exclude_zero: true}
+    - normalize: {method: minmax, range: [0, 1], exclude_zero: false}
 
 # ============================================================================
 # Trigger-level scaling — per-trigger features for set-based models
@@ -37,7 +37,7 @@ trigger_scaling:
     - transform: log1p
     - normalize: {method: minmax, range: [0, 1]}
   time:
-    range: [-10, 10]
+    range: [-1.5, 5]
 
 # ============================================================================
 # Geometry features — looked up from pre-computed geometry YAMLs

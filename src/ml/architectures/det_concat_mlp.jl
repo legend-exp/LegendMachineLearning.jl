@@ -24,6 +24,11 @@ function Lux.apply(m::DetConcatMLP, (xs, xd)::Tuple, ps, st)
     return out, (prefix=ss, det=sd, cat=sc, tail=s)
 end
 
+# NamedTuple input dispatch — pulls the fields this model actually needs.
+function Lux.apply(m::DetConcatMLP, inputs::NamedTuple, ps, st)
+    return Lux.apply(m, (inputs.sipm, inputs.det), ps, st)
+end
+
 # ── Builder ──────────────────────────────────────────────────────────────────
 
 function _build_mlp_detector_concat(cfg::Dict, n_sipm::Int)

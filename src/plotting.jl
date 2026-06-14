@@ -1,9 +1,10 @@
 # This file is a part of ML-based-LAr-veto, licensed under the MIT License (MIT).
 # Plotting helpers — extraction + normalization plots
 
-using Statistics: quantile
+using Statistics: quantile, median
 using Printf
 using StatsBase: fit, Histogram, midpoints
+using Random: MersenneTwister, AbstractRNG
 
 const _HAS_LEGENDMAKIE = try
     @eval using CairoMakie
@@ -15,6 +16,251 @@ catch e
 end
 
 _sup(n::Int) = join([Dict(c => s for (c, s) in zip("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"))[c] for c in string(n)])
+
+# ============================================================================
+# K40 per-detector survival fractions (for physics extraction)
+# ============================================================================
+# Ported from sipm-analysis/scripts/LAr_veto_survival_fractions/plot_k40_detector_survival.jl
+# Works directly on an in-memory PreparedDataset (full-window rel. to ged_t0).
+
+const _K40_SIGNAL_WINDOW  = (1453.8, 1467.8)     # keV (±7 around 1460.8)
+const _K40_BG_WINDOWS     = [(1432.8, 1453.8), (1467.8, 1488.8)]
+const _K40_BG_SCALE       = (_K40_SIGNAL_WINDOW[2] - _K40_SIGNAL_WINDOW[1]) /
+                            sum(w[2] - w[1] for w in _K40_BG_WINDOWS)  # = 14/42 = 1/3
+
+# K42 (1524.7 keV) — single source of truth for HPO objective `k42_sf` AND the
+# `plot_k40_k42_survival` legend. Keep them aligned: changing the windows here
+# shifts both the optimisation target and the reported number.
+const _K42_SIGNAL_WINDOW  = (1517.7, 1531.7)
+const _K42_BG_WINDOWS     = [(1503.7, 1517.7), (1531.7, 1545.7)]
+const _K42_BG_SCALE       = (_K42_SIGNAL_WINDOW[2] - _K42_SIGNAL_WINDOW[1]) /
+                            sum(w[2] - w[1] for w in _K42_BG_WINDOWS)  # = 14/28 = 1/2
+
+# Marsaglia & Tsang gamma sampler
+function _gamma_sample(rng::AbstractRNG, shape::Float64)
+    if shape < 1.0
+        return _gamma_sample(rng, shape + 1.0) * rand(rng)^(1.0 / shape)
+    end
+    d = shape - 1.0/3.0
+    c = 1.0 / sqrt(9.0 * d)
+    while true
+        x = randn(rng)
+        v = (1.0 + c * x)^3
+        v <= 0.0 && continue
+        u = rand(rng)
+        if u < 1.0 - 0.0331 * x^2 * x^2
+            return d * v
+        end
+        if log(u) < 0.5 * x^2 + d * (1.0 - v + log(v))
+            return d * v
+        end
+    end
+end
+
+"""
+    bayesian_survival(sig_tot, sig_surv, bg_tot, bg_surv, α; n_mc=50000)
+        → (median_%, err_lo_%, err_hi_%)
+
+Bayesian background-subtracted survival with Jeffreys prior. Returns
+(median, err_lo, err_hi) in percent, clamped to [0, 100].
+"""
+function bayesian_survival(sig_tot::Int, sig_surv::Int, bg_tot::Int, bg_surv::Int, α::Float64; n_mc::Int=50000)
+    A = Float64(sig_surv)
+    B = Float64(sig_tot - sig_surv)
+    C = Float64(bg_surv)
+    D = Float64(bg_tot - bg_surv)
+
+    rng = MersenneTwister(42)
+    samples = Float64[]
+    sizehint!(samples, n_mc)
+    for _ in 1:n_mc
+        a = _gamma_sample(rng, A + 0.5)
+        b = _gamma_sample(rng, B + 0.5)
+        c = _gamma_sample(rng, C + 0.5)
+        d = _gamma_sample(rng, D + 0.5)
+        M = (a + b) - α * (c + d)
+        M <= 0.0 && continue
+        N = a - α * c
+        push!(samples, clamp(N / M * 100.0, 0.0, 100.0))
+    end
+    length(samples) < 100 && return (NaN, NaN, NaN)
+    sort!(samples)
+    med = samples[div(length(samples), 2)]
+    lo  = samples[max(1, round(Int, 0.16 * length(samples)))]
+    hi  = samples[min(length(samples), round(Int, 0.84 * length(samples)))]
+    err_lo = min(med - lo, med)
+    err_hi = min(hi - med, 100.0 - med)
+    return (med, err_lo, err_hi)
+end
+
+"""
+    compute_k40_detector_stats(ds; pe06=0.6, pe_sum_4x4=4.0, mult_4x4=4)
+        → Dict{UInt32, NamedTuple}
+
+Per-HPGe-detector K40 sig/bg counts using `event_sum_pe`, `event_multiplicity`,
+`ged_energy_keV` and `ged_detector_id` from a PreparedDataset. Only events
+with energy inside the signal or sideband windows contribute.
+"""
+function compute_k40_detector_stats(ds::PreparedDataset;
+                                    pe06::Float64=0.6,
+                                    pe_sum_4x4::Float64=4.0,
+                                    mult_4x4::Int=4)
+    stats = Dict{UInt32, NamedTuple{(:sig_tot, :sig_surv_pe06, :sig_surv_4x4,
+                                      :bg_tot, :bg_surv_pe06, :bg_surv_4x4), NTuple{6, Int}}}()
+    sig_lo, sig_hi = _K40_SIGNAL_WINDOW
+    for i in 1:ds.n_events
+        det = ds.ged_detector_id[i]
+        det == UInt32(0) && continue
+        e = ds.ged_energy_keV[i]
+        isfinite(e) || continue
+
+        in_sig = sig_lo <= e <= sig_hi
+        in_bg  = any(w -> w[1] <= e <= w[2], _K40_BG_WINDOWS)
+        (in_sig || in_bg) || continue
+
+        pe_sum = ds.event_sum_pe[i]
+        mult   = ds.event_multiplicity[i]
+        surv_pe06 = pe_sum < pe06
+        surv_4x4  = !(mult >= mult_4x4 || pe_sum >= pe_sum_4x4)
+
+        prev = get(stats, det, (sig_tot=0, sig_surv_pe06=0, sig_surv_4x4=0,
+                                bg_tot=0, bg_surv_pe06=0, bg_surv_4x4=0))
+        if in_sig
+            stats[det] = (sig_tot        = prev.sig_tot + 1,
+                          sig_surv_pe06  = prev.sig_surv_pe06 + (surv_pe06 ? 1 : 0),
+                          sig_surv_4x4   = prev.sig_surv_4x4  + (surv_4x4  ? 1 : 0),
+                          bg_tot         = prev.bg_tot,
+                          bg_surv_pe06   = prev.bg_surv_pe06,
+                          bg_surv_4x4    = prev.bg_surv_4x4)
+        else
+            stats[det] = (sig_tot        = prev.sig_tot,
+                          sig_surv_pe06  = prev.sig_surv_pe06,
+                          sig_surv_4x4   = prev.sig_surv_4x4,
+                          bg_tot         = prev.bg_tot + 1,
+                          bg_surv_pe06   = prev.bg_surv_pe06 + (surv_pe06 ? 1 : 0),
+                          bg_surv_4x4    = prev.bg_surv_4x4  + (surv_4x4  ? 1 : 0))
+        end
+    end
+    stats
+end
+export compute_k40_detector_stats, bayesian_survival
+
+"""
+    plot_k40_detector_survival(ds, group_name, l200, filekey;
+                               preliminary=true) → Figure or nothing
+
+Wide per-detector K40 survival probability plot (0.6 PE cut + 4×4 cut) in the
+style of the sipm-analysis reference. Detector ordering is taken from
+`channelinfo(l200, filekey; system=:geds, only_processable=true)`.
+Detectors with no events in signal/bg windows are shown as red tick labels.
+"""
+function plot_k40_detector_survival(ds::PreparedDataset, group_name::String,
+                                    l200, filekey;
+                                    preliminary::Bool=true)
+    _HAS_LEGENDMAKIE || return nothing
+    stats = compute_k40_detector_stats(ds)
+    isempty(stats) && (@warn "No K40 events found for $(ds.name)"; return nothing)
+
+    # Bayesian survival for each detector with data
+    results = Dict{UInt32, NamedTuple}()
+    for (det, st) in stats
+        ε06, lo06, hi06 = bayesian_survival(st.sig_tot, st.sig_surv_pe06, st.bg_tot, st.bg_surv_pe06, _K40_BG_SCALE)
+        ε44, lo44, hi44 = bayesian_survival(st.sig_tot, st.sig_surv_4x4,  st.bg_tot, st.bg_surv_4x4,  _K40_BG_SCALE)
+        results[det] = (ε06=ε06, lo06=lo06, hi06=hi06, ε44=ε44, lo44=lo44, hi44=hi44,
+                        sig_tot=st.sig_tot, bg_tot=st.bg_tot)
+    end
+
+    # Ordered detector list from channelinfo
+    chinfo = channelinfo(l200, filekey; system=:geds, only_processable=true)
+    det_info = [(det=UInt32(chinfo.detector[i]), name=string(chinfo.detector[i]),
+                 str_id=Int(chinfo.detstring[i]), pos=Int(chinfo.position[i]))
+                for i in 1:length(chinfo)]
+    sort!(det_info, by = x -> (x.str_id, x.pos))
+
+    # Build tick entries with string separators
+    STRING_FS  = 14
+    DET_FS     = 12
+    MARKER_SIZE = 12
+    X_OFFSET    = 0.15
+
+    red_dets = Set(UInt32[d.det for d in det_info if !haskey(results, d.det)])
+    n_nodata = length(red_dets)
+
+    tick_positions = Float64[]
+    tick_labels    = Any[]
+    det_positions  = Dict{UInt32, Float64}()
+    string_boundaries = Float64[]
+    current_string = -1
+    x_pos = 1.0
+
+    for info in det_info
+        if info.str_id != current_string
+            push!(string_boundaries, x_pos)
+            push!(tick_positions, x_pos)
+            push!(tick_labels, Makie.rich(@sprintf("String%02d", info.str_id);
+                color=LegendMakie.AchatBlue, fontsize=STRING_FS, font=:bold))
+            x_pos += 1.0
+            current_string = info.str_id
+        end
+        det_positions[info.det] = x_pos
+        col = info.det in red_dets ? :red : :black
+        push!(tick_positions, x_pos)
+        push!(tick_labels, Makie.rich(info.name; color=col, fontsize=DET_FS))
+        x_pos += 1.0
+    end
+    push!(string_boundaries, x_pos)
+
+    fig = with_theme(LegendMakie.LegendTheme) do
+        f = Figure(size=(1800, 600))
+        ax = Axis(f[1, 1];
+            ylabel="K40 Survival probability (%)",
+            xlabel="Detector",
+            xlabelsize=22, ylabelsize=22,
+            xticklabelrotation=π/2, xticklabelsize=14, yticklabelsize=18,
+            xgridvisible=false, ygridvisible=false)
+
+        # 0.6 PE cut
+        pe06_dets = [d.det for d in det_info if haskey(results, d.det) && isfinite(results[d.det].ε06)]
+        if !isempty(pe06_dets)
+            px = [det_positions[d] - X_OFFSET for d in pe06_dets]
+            py = [results[d].ε06 for d in pe06_dets]
+            lo = [results[d].lo06 for d in pe06_dets]
+            hi = [results[d].hi06 for d in pe06_dets]
+            errorbars!(ax, px, py, lo, hi; color=LegendMakie.CoaxGreen, linewidth=1.5)
+            scatter!(ax, px, py; color=LegendMakie.CoaxGreen, markersize=MARKER_SIZE,
+                strokecolor=:black, strokewidth=1.5, marker=:circle,
+                label="0.6 PE threshold ($(length(pe06_dets)) det.)")
+        end
+
+        # 4×4 cut
+        c44_dets = [d.det for d in det_info if haskey(results, d.det) && isfinite(results[d.det].ε44)]
+        if !isempty(c44_dets)
+            cx = [det_positions[d] + X_OFFSET for d in c44_dets]
+            cy = [results[d].ε44 for d in c44_dets]
+            lo = [results[d].lo44 for d in c44_dets]
+            hi = [results[d].hi44 for d in c44_dets]
+            errorbars!(ax, cx, cy, lo, hi; color=LegendMakie.BEGeOrange, linewidth=1.5)
+            scatter!(ax, cx, cy; color=LegendMakie.BEGeOrange, markersize=MARKER_SIZE,
+                strokecolor=:black, strokewidth=1.5, marker=:utriangle,
+                label="4×4 cut (mult≥4 ∨ PE≥4) ($(length(c44_dets)) det.)")
+        end
+
+        if n_nodata > 0
+            scatter!(ax, Float64[], Float64[]; color=:red, markersize=MARKER_SIZE,
+                strokecolor=:black, strokewidth=1.5,
+                label="No data ($n_nodata/$(length(det_info)))")
+        end
+
+        ax.xticks = (tick_positions, tick_labels)
+        ax.limits = ((1.0, x_pos), (0.0, 100.0))
+        vlines!(ax, string_boundaries; color=(:black, 0.3), linewidth=0.8)
+        axislegend(ax; position=:rb, framevisible=true, labelsize=16, markersize=14)
+        LegendMakie.add_watermarks!(; preliminary, final=false, production=true)
+        f
+    end
+    fig
+end
+export plot_k40_detector_survival
 
 # ============================================================================
 # Recipe 1: LAr energy vs multiplicity 2D histogram (4×4 classifier)
@@ -99,8 +345,10 @@ end
 # Recipe 2: Per-SiPM trigger heatmap (time vs PE) with marginals + windows
 # ============================================================================
 
+const _PE_THRESHOLD = 0.6
+
 function _plot_trigger_heatmap(times::Vector{Float64}, pes::Vector{Float64},
-                               sipm_id::UInt32, ds_name::String, group_name::String;
+                               title_str::String;
                                windows=nothing, preliminary::Bool=true)
     _HAS_LEGENDMAKIE || return nothing
 
@@ -135,16 +383,16 @@ function _plot_trigger_heatmap(times::Vector{Float64}, pes::Vector{Float64},
     pe_proj = Float64.(vec(sum(weights; dims=1)))   # sum over time → PE profile
 
     fig = with_theme(LegendMakie.LegendTheme) do
-        det_name = string(DetectorId(sipm_id))
         f = Figure(size=(1100, 750))
 
         # Layout: [1,2]=top marginal, [2,1]=left marginal, [2,2]=main, [2,3]=colorbar
-        ax_top  = Axis(f[1, 2];
-                       title="$(ds_name) — $(det_name) | $(group_name) (n=$(length(times)))")
+        ax_top  = Axis(f[1, 2]; title=title_str, titlesize=18)
         ax_left = Axis(f[2, 1]; xreversed=true, xscale=log10)
         ax_main = Axis(f[2, 2];
             xlabel = "Time relative to t₀ (μs)",
-            ylabel = "PE",
+            ylabel = "Energy (PE)",
+            xlabelsize = 18,
+            ylabelsize = 18,
         )
 
         # Main heatmap
@@ -152,11 +400,20 @@ function _plot_trigger_heatmap(times::Vector{Float64}, pes::Vector{Float64},
                        colormap=:viridis, colorrange=(0.0, Float64(max_log)),
                        nan_color=(:white, 0))
 
-        # Top marginal (time projection)
-        barplot!(ax_top, t_mid, t_proj; width=dt, color=(:steelblue, 0.7))
+        # Top marginal — line histogram, no fill
+        stairs!(ax_top, t_mid, t_proj; step=:center,
+                color=:steelblue, linewidth=2.2)
 
-        # Left marginal (PE projection, horizontal bars, mirrored: 0 right, high left)
-        barplot!(ax_left, pe_mid, pe_proj; width=dp, direction=:x, color=(:steelblue, 0.7))
+        # Left marginal — line histogram (PE on y, count on x).
+        # On log10 the empty bins (count=0) blow up auto-axis logic and pin
+        # the upper limit to a fixed value (~10³). Replace zeros with NaN to
+        # cut the line cleanly, then drive the limits from the actual peak.
+        pe_proj_log = [p > 0 ? p : NaN for p in pe_proj]
+        stairs!(ax_left, pe_proj_log, pe_mid; step=:center,
+                color=:steelblue, linewidth=2.2)
+        let pe_max = maximum(pe_proj; init=1.0)
+            xlims!(ax_left, max(pe_max * 1.6, 10.0), 0.5)
+        end
 
         # Link axes & hide shared decorations
         linkxaxes!(ax_main, ax_top)
@@ -165,9 +422,17 @@ function _plot_trigger_heatmap(times::Vector{Float64}, pes::Vector{Float64},
         hidexdecorations!(ax_left; grid=true, label=false, ticklabels=false, ticks=false)
         hideydecorations!(ax_left; grid=false)
 
-        # Layout proportions
+        # Layout proportions — left projection 12% wide, top projection 15% tall.
+        # Tight gap between left projection and main plot so the y-axis label
+        # of the main plot still has room but the projection sits close.
         colsize!(f.layout, 1, Relative(0.12))
         rowsize!(f.layout, 1, Relative(0.15))
+        colgap!(f.layout, 1, 8)
+        rowgap!(f.layout, 1, 6)
+
+        # 0.6 PE threshold — red line on main + left projection
+        hlines!(ax_main, [_PE_THRESHOLD]; color=:red, linewidth=2.0)
+        hlines!(ax_left, [_PE_THRESHOLD]; color=:red, linewidth=2.0)
 
         # Window overlays
         if windows !== nothing
@@ -175,34 +440,37 @@ function _plot_trigger_heatmap(times::Vector{Float64}, pes::Vector{Float64},
             pw_lo, pw_hi = windows.prompt
             dw_lo, dw_hi = windows.delayed
 
-            # Full window: thick solid black vertical lines
+            # Full window: thick solid black vertical lines (main + top)
             vlines!(ax_main, [fw_lo, fw_hi]; color=:black, linewidth=2.5, linestyle=:solid)
             vlines!(ax_top,  [fw_lo, fw_hi]; color=:black, linewidth=2.0, linestyle=:solid)
 
-            # Prompt/delayed boundary: dashed gray line at the border between them
-            pd_boundary = pw_hi  # prompt end = delayed start
-            vlines!(ax_main, [pd_boundary]; color=:gray50, linewidth=1.5, linestyle=:dash)
-            vlines!(ax_top,  [pd_boundary]; color=:gray50, linewidth=1.5, linestyle=:dash)
+            # Prompt/delayed boundary
+            pd_boundary = pw_hi
+            vlines!(ax_main, [pd_boundary]; color=:gray50, linewidth=2.5, linestyle=:dash)
+            vlines!(ax_top,  [pd_boundary]; color=:gray50, linewidth=2.5, linestyle=:dash)
 
-            # Shaded spans: prompt & delayed on main + top
-            for ax in (ax_main, ax_top)
-                vspan!(ax, pw_lo, pw_hi; color=(:forestgreen, 0.08))
-                vspan!(ax, dw_lo, dw_hi; color=(:darkorange, 0.08))
-            end
+            # Coloured prompt/delayed bands ONLY in the top projection
+            vspan!(ax_top, pw_lo, pw_hi; color=(:forestgreen, 0.30))
+            vspan!(ax_top, dw_lo, dw_hi; color=(:darkorange,  0.30))
 
             # P/D ratio: sum all PE values in prompt vs delayed windows
             pe_prompt  = sum(p for (t, p) in zip(times, pes) if pw_lo <= t <= pw_hi; init=0.0)
             pe_delayed = sum(p for (t, p) in zip(times, pes) if dw_lo <= t <= dw_hi; init=0.0)
             pd_ratio = pe_delayed > 0 ? round(pe_prompt / pe_delayed; digits=2) : Inf
 
-            # Legend entries (invisible lines for labels)
-            lines!(ax_main, [NaN], [NaN]; color=(:forestgreen, 0.5), linewidth=8,
+            # Legend proxies (invisible artists, only show labels)
+            lines!(ax_main, [NaN], [NaN]; color=(:forestgreen, 0.5), linewidth=10,
                    label=@sprintf("Prompt [%.1f, %.1f] μs", pw_lo, pw_hi))
-            lines!(ax_main, [NaN], [NaN]; color=(:darkorange, 0.5), linewidth=8,
+            lines!(ax_main, [NaN], [NaN]; color=(:darkorange, 0.5), linewidth=10,
                    label=@sprintf("Delayed [%.1f, %.1f] μs", dw_lo, dw_hi))
+            lines!(ax_main, [NaN], [NaN]; color=:red, linewidth=2.0,
+                   label=@sprintf("%.1f PE threshold", _PE_THRESHOLD))
             lines!(ax_main, [NaN], [NaN]; color=:transparent,
                    label="ΣPE P/D = $pd_ratio")
-            axislegend(ax_main; position=:rt, backgroundcolor=(:white, 0.7), labelsize=11)
+            leg = axislegend(ax_main; position=:lt, framevisible=true,
+                             backgroundcolor=(:white, 0.95), labelsize=14,
+                             padding=(10, 10, 8, 8), patchsize=(28, 14))
+            translate!(leg.blockscene, 0, 0, 1000)  # bring legend to the foreground
         end
 
         # Colorbar
@@ -228,17 +496,37 @@ and window markers.  `ds_cfg` is the dataset config dict (for time windows).
 Output: `{plot_dir}/{ds.name}/lar_classifier_*.png` + `{DetectorName}.png`.
 """
 function save_extraction_plots(ds::PreparedDataset, group_name::String, plot_dir::String,
-                               ds_cfg::Dict; max_sipms::Int=0, preliminary::Bool=true)
+                               ds_cfg::Dict; max_sipms::Int=0, preliminary::Bool=true,
+                               l200=nothing, group_def=nothing)
     _HAS_LEGENDMAKIE || return nothing
     ds_dir = joinpath(plot_dir, ds.name)
     mkpath(ds_dir)
 
-    # 1) LAr classifier
+    # 1) LAr classifier — event energy vs multiplicity
     fig = plot_lar_classifier(ds, group_name; preliminary)
     if fig !== nothing
-        path = joinpath(ds_dir, "lar_classifier_$(ds.name).png")
+        eem_dir = joinpath(ds_dir, "event_energy_vs_multiplicity")
+        mkpath(eem_dir)
+        path = joinpath(eem_dir, "lar_classifier_$(ds.name).png")
         save(path, fig; px_per_unit=2)
         @info "  Saved" path=basename(path)
+    end
+
+    # 1b) K40 per-detector survival fraction (only for physics dataset)
+    if ds.name == "physics" && l200 !== nothing && group_def !== nothing
+        filekey = _k40_first_filekey(l200, group_def)
+        if filekey !== nothing
+            k40_fig = plot_k40_detector_survival(ds, group_name, l200, filekey; preliminary)
+            if k40_fig !== nothing
+                k40_dir = joinpath(ds_dir, "k40_survival")
+                mkpath(k40_dir)
+                k40_path = joinpath(k40_dir, "k40_detector_survival.png")
+                save(k40_path, k40_fig; px_per_unit=2)
+                @info "  Saved" path=basename(k40_path)
+            end
+        else
+            @warn "  K40 plot skipped: no filekey available for group"
+        end
     end
 
     # 2) Per-SiPM trigger heatmaps
@@ -270,23 +558,161 @@ function save_extraction_plots(ds::PreparedDataset, group_name::String, plot_dir
         sorted_ids = sorted_ids[1:max_sipms]
     end
 
+    rtp_dir = joinpath(ds_dir, "relative_time_vs_pe")
+    mkpath(rtp_dir)
+
     n_saved = 0
     for sipm_id in sorted_ids
         times, pes = sipm_triggers[sipm_id]
         length(times) < 10 && continue
 
-        fig = _plot_trigger_heatmap(times, pes, sipm_id, ds.name, group_name; windows, preliminary)
+        det_name = string(DetectorId(sipm_id))
+        fig = _plot_trigger_heatmap(times, pes, det_name; windows, preliminary)
         fig === nothing && continue
 
-        det_name = string(DetectorId(sipm_id))
-        path = joinpath(ds_dir, "$(det_name).png")
+        path = joinpath(rtp_dir, "$(det_name).png")
         save(path, fig; px_per_unit=2)
         n_saved += 1
     end
-    @info "  Saved $n_saved trigger heatmaps for $(ds.name)" dir=ds_dir
+
+    # Combined ALL-SiPMs plot: pool every trigger across detectors
+    all_times = isempty(sorted_ids) ? Float64[] :
+                reduce(vcat, sipm_triggers[id][1] for id in sorted_ids)
+    all_pes   = isempty(sorted_ids) ? Float64[] :
+                reduce(vcat, sipm_triggers[id][2] for id in sorted_ids)
+    if length(all_times) >= 10
+        fig_all = _plot_trigger_heatmap(all_times, all_pes,
+                                        "ALL SiPMs (n=$(length(all_times)))";
+                                        windows, preliminary)
+        if fig_all !== nothing
+            save(joinpath(rtp_dir, "ALL.png"), fig_all; px_per_unit=2)
+            n_saved += 1
+        end
+    end
+
+    @info "  Saved $n_saved trigger heatmaps for $(ds.name)" dir=rtp_dir
 end
 
 export plot_lar_classifier, save_extraction_plots
+
+# ============================================================================
+# Recipe 3: Δt = t_max_pe(SiPM mode) − t0_hpge per HPGe detector + combined
+# ============================================================================
+
+function _plot_t0_diff(vs::Vector{Float64}, plot_path::String, title::String;
+                       edges, prompt_window::Tuple{Float64,Float64},
+                       preliminary::Bool)
+    _HAS_LEGENDMAKIE || return nothing
+    mkpath(dirname(plot_path))
+    h = fit(Histogram, vs, edges).weights
+    centers = collect(edges[1:end-1]) .+ step(edges) / 2
+    ymax = maximum(h)
+    ymax == 0 && return nothing
+
+    fig = with_theme(LegendMakie.LegendTheme) do
+        f = Figure(size=(900, 500))
+        ax = Axis(f[1, 1];
+            xlabel = "Δt = t_max_pe − t0_hpge (μs)",
+            ylabel = @sprintf("Counts / %.2f μs", step(edges)),
+            title  = title,
+            yscale = log10,
+            limits = ((Float64(first(edges)), Float64(last(edges))),
+                      (0.5, max(Float64(ymax) * 2.0, 10.0))))
+        stairs!(ax, centers, Float64.(max.(h, 1));
+                color=:steelblue, linewidth=1.5, label="Δt distribution")
+        vlines!(ax, collect(prompt_window);
+                color=:red, linewidth=1.5, linestyle=:dash,
+                label=@sprintf("Prompt window [%.1f, %.1f] μs",
+                               prompt_window[1], prompt_window[2]))
+        axislegend(ax; position=:rt, framevisible=false)
+        LegendMakie.add_watermarks!(; preliminary)
+        f
+    end
+    save(plot_path, fig; px_per_unit=2)
+    return plot_path
+end
+
+"""
+    plot_t0_diff_per_detector(prep, det_id, det_name, ds_name, group_name, plot_path;
+                              evt_pe_min=5.0, edges=-7:0.2:7,
+                              prompt_window=(-1.0, 1.0), preliminary=true)
+
+Per-HPGe Δt histogram. Selects events with `ged_detector_id == det_id`,
+`event_sum_pe ≥ evt_pe_min` (full-window PE-sum cut) and finite Δt.
+"""
+function plot_t0_diff_per_detector(prep::PreparedDataset, det_id::UInt32,
+                                   det_name::String, ds_name::String, group_name::String,
+                                   plot_path::String;
+                                   evt_pe_min::Float64=5.0,
+                                   edges=-7.0:0.2:7.0,
+                                   prompt_window::Tuple{Float64,Float64}=(-1.0, 1.0),
+                                   preliminary::Bool=true)
+    _HAS_LEGENDMAKIE || return nothing
+    mask = (prep.ged_detector_id .== det_id) .&
+           isfinite.(prep.delta_t_max_pe_us) .&
+           (prep.event_sum_pe .>= evt_pe_min)
+    vs = prep.delta_t_max_pe_us[mask]
+    isempty(vs) && return nothing
+    title = @sprintf("Δt | %s | %s | %s | Σ_PE_full ≥ %.1f | N=%d",
+                     det_name, ds_name, group_name, evt_pe_min, length(vs))
+    _plot_t0_diff(vs, plot_path, title; edges, prompt_window, preliminary)
+end
+
+"""
+    plot_t0_diff_combined(prep, ds_name, group_name, plot_path;
+                          evt_pe_min=5.0, edges=-7:0.2:7,
+                          prompt_window=(-1.0, 1.0), preliminary=true)
+
+Pooled Δt histogram across all HPGe detectors. Same per-event cuts as the
+per-detector version, plus `ged_detector_id != 0`.
+"""
+function plot_t0_diff_combined(prep::PreparedDataset, ds_name::String, group_name::String,
+                               plot_path::String;
+                               evt_pe_min::Float64=5.0,
+                               edges=-7.0:0.2:7.0,
+                               prompt_window::Tuple{Float64,Float64}=(-1.0, 1.0),
+                               preliminary::Bool=true)
+    _HAS_LEGENDMAKIE || return nothing
+    mask = isfinite.(prep.delta_t_max_pe_us) .&
+           (prep.event_sum_pe .>= evt_pe_min) .&
+           (prep.ged_detector_id .!= UInt32(0))
+    vs = prep.delta_t_max_pe_us[mask]
+    isempty(vs) && return nothing
+    title = @sprintf("Δt | all detectors | %s | %s | Σ_PE_full ≥ %.1f | N=%d",
+                     ds_name, group_name, evt_pe_min, length(vs))
+    _plot_t0_diff(vs, plot_path, title; edges, prompt_window, preliminary)
+end
+
+"""
+    save_t0_diff_plots(prep, group_name, plot_dir; evt_pe_min=5.0, preliminary=true)
+
+For one dataset's PreparedDataset, save one Δt histogram per HPGe detector
+plus one pooled "ALL.png" plot under
+`{plot_dir}/{prep.name}/relative_time_histogram/t0_diff/`.
+"""
+function save_t0_diff_plots(prep::PreparedDataset, group_name::String, plot_dir::String;
+                            evt_pe_min::Float64=5.0, preliminary::Bool=true)
+    _HAS_LEGENDMAKIE || return nothing
+    out_dir = joinpath(plot_dir, prep.name, "relative_time_histogram", "t0_diff")
+    mkpath(out_dir)
+
+    n_per_det = 0
+    for det_id in sort!(unique(prep.ged_detector_id))
+        det_id == UInt32(0) && continue
+        det_name = string(DetectorId(det_id))
+        path = joinpath(out_dir, "$(det_name).png")
+        plot_t0_diff_per_detector(prep, det_id, det_name, prep.name, group_name, path;
+                                  evt_pe_min, preliminary) !== nothing && (n_per_det += 1)
+    end
+
+    plot_t0_diff_combined(prep, prep.name, group_name,
+                          joinpath(out_dir, "ALL.png");
+                          evt_pe_min, preliminary)
+
+    @info "  Saved $n_per_det Δt per-detector plots + 1 combined" dir=out_dir
+end
+
+export plot_t0_diff_per_detector, plot_t0_diff_combined, save_t0_diff_plots
 
 # ============================================================================
 # Normalization Plots
@@ -319,6 +745,21 @@ function save_activity_plots(sub_mat::Matrix{Float64}, ft_mat::Matrix{Float64},
     pe_thresh = 0.6
     n_saved = 0
 
+    # Smooth grid for the cos_proximity overlay curve.
+    cos_grid = collect(range(-180.0, 180.0; length=361))
+    cos_curve_unit = [(1.0 + cos(deg2rad(θ))) / 2.0 for θ in cos_grid]
+
+    # Collectors for the combined "ALL" plot — one (rel_angle, activity%) point
+    # per (HPGe, SiPM) pair, aggregated across HPGes. Only HPGes with at least
+    # `all_min_events` sub500keV events contribute, so per-HPGe activity values
+    # are not driven by tiny-statistics outliers (a single hit at 100 % from a
+    # detector with 2 events would otherwise dominate the curve normalisation).
+    all_min_events = 200
+    all_rel    = Float64[]
+    all_sub    = Float64[]
+    all_ft     = Float64[]
+    sub_act_max_global = 0.0   # for ALL-plot cos_proximity normalisation
+
     for (hpge_name, hpge_info) in sort(collect(hpge_geom); by=first)
         hpge_angle = get(hpge_info, "angle_deg", NaN)
         isnan(hpge_angle) && continue
@@ -337,17 +778,31 @@ function save_activity_plots(sub_mat::Matrix{Float64}, ft_mat::Matrix{Float64},
         # Center SiPM angles relative to HPGe (HPGe at 0, range -180..180)
         rel_angles = [mod(a - hpge_angle + 180, 360) - 180 for a in sipm_angles]
 
+        # cos_proximity overlay — normalised to this HPGe's max sub500keV activity
+        sub_act_max = n_sub > 0 ? maximum(sub_act) : 0.0
+        cos_curve = cos_curve_unit .* sub_act_max
+
+        # Aggregate into the ALL-plot collectors — drop low-stats detectors
+        if n_sub >= all_min_events
+            append!(all_rel, rel_angles)
+            append!(all_sub, sub_act)
+            append!(all_ft,  ft_act)
+            sub_act_max_global = max(sub_act_max_global, sub_act_max)
+        end
+
         fig = with_theme(LegendMakie.LegendTheme) do
-            f = Figure(size=(700, 450))
-            ax = Axis(f[1, 1]; xlabel="SiPM angle relative to HPGe (°)", ylabel="SiPM activity (%)",
-                      title="$hpge_name — sub500keV: $n_sub, FT: $n_ft events",
+            f = Figure(size=(800, 500))
+            ax = Axis(f[1, 1]; xlabel="SiPM angle θ relative to HPGe (°)", ylabel="SiPM activity (%)",
+                      title=hpge_name,
                       limits=((-180, 180), (0, nothing)))
 
-            scatter!(ax, rel_angles, sub_act; color=:orange, markersize=8, label="Sub-500 keV")
-            scatter!(ax, rel_angles, ft_act; color=:dodgerblue, markersize=8, label="Forced trigger")
+            scatter!(ax, rel_angles, sub_act; color=:orange, markersize=9, label="Sub-500 keV")
+            scatter!(ax, rel_angles, ft_act; color=:dodgerblue, markersize=9, label="Forced trigger")
+            lines!(ax, cos_grid, cos_curve; color=:black, linewidth=2.0,
+                   label="(1 + cos θ)/2")
             vlines!(ax, [0.0]; color=:gray40, linestyle=:dash, linewidth=1.5,
                     label="String: $(lpad(string_id, 2, '0')) | Pos: $pos_in_str | Angle: $(round(Int, hpge_angle))°")
-            axislegend(ax; position=:lt, framevisible=false, labelsize=10)
+            axislegend(ax; position=:lt, framevisible=true, labelsize=14, padding=(10, 10, 8, 8))
             LegendMakie.add_watermarks!(; preliminary)
             f
         end
@@ -356,6 +811,31 @@ function save_activity_plots(sub_mat::Matrix{Float64}, ft_mat::Matrix{Float64},
         save(path, fig; px_per_unit=2)
         n_saved += 1
     end
+
+    # ── Combined ALL plot ────────────────────────────────────────────────
+    if !isempty(all_rel)
+        # Fixed peak at 50% — the per-HPGe peaks vary, but for the combined
+        # plot a stable reference makes comparison across groups easier.
+        cos_curve_all = cos_curve_unit .* 50.0
+        fig_all = with_theme(LegendMakie.LegendTheme) do
+            f = Figure(size=(900, 550))
+            ax = Axis(f[1, 1]; xlabel="SiPM angle θ relative to HPGe (°)", ylabel="SiPM activity (%)",
+                      title="ALL HPGe detectors combined",
+                      limits=((-180, 180), (0, nothing)))
+
+            scatter!(ax, all_rel, all_sub; color=(:orange, 0.55), markersize=7, label="Sub-500 keV")
+            scatter!(ax, all_rel, all_ft;  color=(:dodgerblue, 0.55), markersize=7, label="Forced trigger")
+            lines!(ax, cos_grid, cos_curve_all; color=:black, linewidth=2.0,
+                   label="(1 + cos θ)/2")
+            vlines!(ax, [0.0]; color=:gray40, linestyle=:dash, linewidth=1.5)
+            axislegend(ax; position=:lt, framevisible=true, labelsize=14, padding=(10, 10, 8, 8))
+            LegendMakie.add_watermarks!(; preliminary)
+            f
+        end
+        save(joinpath(act_dir, "ALL.png"), fig_all; px_per_unit=2)
+        n_saved += 1
+    end
+
     @info "  Saved $n_saved activity scatter plots" dir=act_dir
 end
 export save_activity_plots
@@ -450,6 +930,7 @@ function save_pe_distribution_plots(before::Dict{String,Dict{String,Matrix{Float
                     titlesize = 13)
 
                 # 1) Full as filled step histogram
+                has_labeled = false   # track at least one labelled artist for axislegend
                 h_full = get(hist_cache, (ds_name, "sipm_pe_sums"), nothing)
                 if h_full !== nothing
                     xs, ys = _step_xy(h_full.edges[1], h_full.weights)
@@ -461,6 +942,7 @@ function save_pe_distribution_plots(before::Dict{String,Dict{String,Matrix{Float
                               color=(col_colors[1], 0.2))
                         lines!(ax, xs, ys; color=col_colors[1], linewidth=2.0,
                                label="full")
+                        has_labeled = true
                     end
                 end
 
@@ -472,10 +954,13 @@ function save_pe_distribution_plots(before::Dict{String,Dict{String,Matrix{Float
                     any(.!isnan.(ys)) || continue
                     lines!(ax, xs, ys; color=col_colors[ki+1], linewidth=1.8,
                            label=col_labels[ki+1])
+                    has_labeled = true
                 end
 
-                axislegend(ax; position=:rt, framevisible=false, labelsize=12,
-                           patchsize=(20, 12))
+                # Skip legend on empty axes — happens for SiPMs that have no
+                # positive PE in any of the three histogram windows.
+                has_labeled && axislegend(ax; position=:rt, framevisible=false,
+                                           labelsize=12, patchsize=(20, 12))
             end
         end
 
@@ -860,6 +1345,38 @@ function plot_survival_cdf(
 end
 
 """
+    compute_k42_sf_at_k40_threshold(energy_keV, pred_ml, threshold_k40) → Float64
+
+Background-subtracted K42 (1525 keV) survival fraction of the ML veto, evaluated
+at a given veto threshold (typically the K40-matched one from
+`compute_k40_threshold`).
+
+Used as the HPO objective when `objective.metric == k42_sf`: a lower SF means
+the model better suppresses the K42 line at the same K40 efficiency as the
+4×4 baseline. Returns NaN if the K42 net signal before the cut is non-positive.
+"""
+function compute_k42_sf_at_k40_threshold(
+    energy_keV::AbstractVector{<:Real},
+    pred_ml::AbstractVector{<:Real},
+    threshold_k40::Real,
+)
+    sig_lo, sig_hi = _K42_SIGNAL_WINDOW
+    e = Float64.(energy_keV)
+    in_sig = (e .>= sig_lo) .& (e .< sig_hi)
+    in_bg  = falses(length(e))
+    for (lo, hi) in _K42_BG_WINDOWS
+        in_bg .|= (e .>= lo) .& (e .< hi)
+    end
+    surv = pred_ml .< Float32(threshold_k40)
+
+    net_before = count(in_sig) - _K42_BG_SCALE * count(in_bg)
+    net_before <= 0 && return NaN
+    net_after  = count(in_sig .& surv) - _K42_BG_SCALE * count(in_bg .& surv)
+    return clamp(net_after / net_before, 0.0, 1.0)
+end
+export compute_k42_sf_at_k40_threshold
+
+"""
     compute_k40_threshold(energy_keV, pred_ml, pred_4x4)
 
 Scan ML thresholds to match the K40 survival fraction of the 4×4 veto.
@@ -870,10 +1387,10 @@ function compute_k40_threshold(
     pred_ml::Vector{Float32},
     pred_4x4::Vector{Int8},
 )
-    k40_sig = (1455.8, 1465.8)
-    k40_bg1 = (1445.8, 1455.8)
-    k40_bg2 = (1465.8, 1475.8)
-    bg_ratio = 0.5
+    k40_sig = (1453.8, 1467.8)
+    k40_bg1 = (1439.8, 1453.8)
+    k40_bg2 = (1467.8, 1481.8)
+    bg_ratio = 0.5   # 14 keV signal / (14 + 14) keV bg
 
     e = Float64.(energy_keV)
     m_sig = (e .>= k40_sig[1]) .& (e .< k40_sig[2])
@@ -962,9 +1479,9 @@ function plot_physics_energy_spectrum(
         lines!(ax_top, xs_all, ys_all;
             color=:gray65, linewidth=1.2, label="Before LAr veto")
         band!(ax_top, xs_4x4, fill(y_floor, length(xs_4x4)), ys_4x4;
-            color=(:cornflowerblue, 0.4), label="After LAr veto (4×4)")
+            color=(:skyblue1, 0.55), label="After LAr veto (4×4)")
         lines!(ax_top, xs_ml, ys_ml;
-            color=:navy, linewidth=1.8, label="After LAr veto (NN)")
+            color=:firebrick, linewidth=1.8, label="After LAr veto (NN)")
 
         i_k40 = searchsortedlast(edges[1:end-1], 1460.8)
         i_k42 = searchsortedlast(edges[1:end-1], 1524.7)
@@ -983,11 +1500,99 @@ function plot_physics_energy_spectrum(
 
         hlines!(ax_bot, [1.0]; color=:gray50, linewidth=0.8, linestyle=:dash)
         scatterlines!(ax_bot, centers[valid], ratio[valid];
-            color=:cornflowerblue, markersize=5, linewidth=1.0, markercolor=:cornflowerblue)
+            color=:firebrick, markersize=5, linewidth=1.0, markercolor=:firebrick)
 
         rowsize!(f.layout, 2, Relative(0.25))
         rowgap!(f.layout, 5)
 
+        # add_watermarks! anchors to Makie.current_axis() — pin it to ax_top
+        # so the logo + PRELIMINARY tag sit next to the main spectrum panel,
+        # not the ratio sub-panel (which was the most recently created axis).
+        Makie.current_axis!(ax_top)
+        LegendMakie.add_watermarks!(; preliminary)
+        f
+    end
+    save(plot_path, fig; px_per_unit=2)
+    @info "  Plot saved: $plot_path"
+    return plot_path
+end
+
+"""
+    plot_physics_zoom_1000_1300_keV(energy_keV, veto_4x4, veto_ml, plot_path)
+
+Zoomed energy spectrum (1000–1300 keV, 5 keV bins) with NN/4×4 ratio panel.
+Same colour scheme as `plot_physics_energy_spectrum`: grey before, light-blue
+4×4 fill, dark-red NN line.
+"""
+function plot_physics_zoom_1000_1300_keV(
+    energy_keV::Vector{Float32},
+    veto_4x4::Vector{Int8},
+    veto_ml::Vector{Int8},
+    plot_path::String;
+    e_lo_keV::Float64=1000.0,
+    e_hi_keV::Float64=1300.0,
+    bin_width_keV::Float64=5.0,
+    preliminary::Bool=true,
+)
+    _HAS_LEGENDMAKIE || return nothing
+    mkpath(dirname(plot_path))
+
+    edges = collect(range(e_lo_keV, e_hi_keV; step=bin_width_keV))
+    centers = edges[1:end-1] .+ bin_width_keV / 2
+
+    e_all = Float64.(energy_keV)
+    e_4x4 = Float64.(energy_keV[veto_4x4 .== Int8(0)])
+    e_ml  = Float64.(energy_keV[veto_ml   .== Int8(0)])
+
+    h_all = fit(Histogram, e_all, edges).weights
+    h_4x4 = fit(Histogram, e_4x4, edges).weights
+    h_ml  = fit(Histogram, e_ml,  edges).weights
+
+    y_floor = 0.1
+    xs_all, ys_all = _hist_xy(edges, max.(h_all, y_floor))
+    xs_4x4, ys_4x4 = _hist_xy(edges, max.(h_4x4, y_floor))
+    xs_ml,  ys_ml  = _hist_xy(edges, max.(h_ml,  y_floor))
+
+    ratio = fill(NaN, length(centers))
+    for i in eachindex(h_4x4)
+        h_4x4[i] > 0 && (ratio[i] = h_ml[i] / h_4x4[i])
+    end
+    valid = .!isnan.(ratio)
+
+    fig = with_theme(LegendMakie.LegendTheme) do
+        f = Figure(size=(1400, 600))
+
+        ax_top = Axis(f[1, 1];
+            ylabel=@sprintf("Counts / %.0f keV", bin_width_keV),
+            yscale=log10,
+            limits=((first(edges), last(edges)), (y_floor, nothing)),
+            xticklabelsvisible=false)
+
+        lines!(ax_top, xs_all, ys_all;
+            color=:gray65, linewidth=1.2, label="Before LAr veto")
+        band!(ax_top, xs_4x4, fill(y_floor, length(xs_4x4)), ys_4x4;
+            color=(:skyblue1, 0.55), label="After LAr veto (4×4)")
+        lines!(ax_top, xs_ml, ys_ml;
+            color=:firebrick, linewidth=1.8, label="After LAr veto (NN)")
+
+        axislegend(ax_top; position=:rt, labelsize=15, framevisible=true,
+                   padding=(8, 8, 6, 6))
+
+        ax_bot = Axis(f[2, 1];
+            xlabel="Energy (keV)", ylabel="NN / 4×4",
+            limits=((first(edges), last(edges)), (0.0, 1.5)))
+
+        hlines!(ax_bot, [1.0]; color=:gray50, linewidth=0.8, linestyle=:dash)
+        scatterlines!(ax_bot, centers[valid], ratio[valid];
+            color=:firebrick, markersize=5, linewidth=1.0, markercolor=:firebrick)
+
+        rowsize!(f.layout, 2, Relative(0.25))
+        rowgap!(f.layout, 5)
+
+        # add_watermarks! anchors to Makie.current_axis() — pin it to ax_top
+        # so the logo + PRELIMINARY tag sit next to the main spectrum panel,
+        # not the ratio sub-panel (which was the most recently created axis).
+        Makie.current_axis!(ax_top)
         LegendMakie.add_watermarks!(; preliminary)
         f
     end
@@ -1006,24 +1611,27 @@ function plot_k40_k42_survival(
     veto_4x4::Vector{Int8},
     veto_ml::Vector{Int8},
     plot_path::String;
+    event_sum_pe::Union{Nothing,AbstractVector}=nothing,
     preliminary::Bool=true,
 )
     _HAS_LEGENDMAKIE || return nothing
     mkpath(dirname(plot_path))
 
+    # K40 sig/bg: tighter dash sidebands matching `compute_k40_threshold`
+    # (bg_ratio = 0.5 → 14 keV sig / 28 keV bg total).
     peaks = [
-        (name="⁴⁰K", center=1460.8, sig_lo=1455.8, sig_hi=1465.8,
-         bg_lo1=1445.8, bg_hi1=1455.8, bg_lo2=1465.8, bg_hi2=1475.8,
-         band_color=(:green, 0.15)),
-        (name="⁴²K", center=1524.7, sig_lo=1519.7, sig_hi=1529.7,
-         bg_lo1=1509.7, bg_hi1=1519.7, bg_lo2=1529.7, bg_hi2=1539.7,
-         band_color=(:red, 0.15)),
+        (name="⁴⁰K", center=1460.8,
+         sig_lo=1453.8, sig_hi=1467.8,
+         bg_lo1=1439.8, bg_hi1=1453.8, bg_lo2=1467.8, bg_hi2=1481.8,
+         band_color=(:green, 0.15), bg_ratio=0.5),
+        (name="⁴²K", center=1524.7,
+         sig_lo=_K42_SIGNAL_WINDOW[1], sig_hi=_K42_SIGNAL_WINDOW[2],
+         bg_lo1=_K42_BG_WINDOWS[1][1], bg_hi1=_K42_BG_WINDOWS[1][2],
+         bg_lo2=_K42_BG_WINDOWS[2][1], bg_hi2=_K42_BG_WINDOWS[2][2],
+         band_color=(:red, 0.15), bg_ratio=_K42_BG_SCALE),
     ]
-    sig_width = 10.0
-    bg_width  = 20.0
-    bg_ratio  = sig_width / bg_width
 
-    edges = collect(range(1440.0, 1540.0; step=1.0))
+    edges = collect(range(1430.0, 1550.0; step=1.0))
     centers = edges[1:end-1] .+ 0.5
 
     e_all  = Float64.(energy_keV)
@@ -1034,9 +1642,19 @@ function plot_k40_k42_survival(
     h_4x4  = fit(Histogram, e_4x4, edges).weights
     h_ml   = fit(Histogram, e_ml,   edges).weights
 
-    xs_all, ys_all = _hist_xy(edges, h_all)
+    # All-SiPMs-dark mask: events that no LAr veto can ever reject
+    # → sets the absolute floor on K42 survival
+    dark_mask = if event_sum_pe !== nothing
+        Float64.(event_sum_pe) .== 0.0
+    else
+        nothing
+    end
+    h_dark = dark_mask === nothing ? nothing :
+             fit(Histogram, Float64.(energy_keV[dark_mask]), edges).weights
+
     xs_4x4, ys_4x4 = _hist_xy(edges, h_4x4)
-    xs_ml, ys_ml = _hist_xy(edges, h_ml)
+    xs_ml,  ys_ml  = _hist_xy(edges, h_ml)
+    xs_all, ys_all = _hist_xy(edges, h_all)
 
     function _count_in_window(h, lo, hi)
         s = 0
@@ -1048,15 +1666,17 @@ function plot_k40_k42_survival(
 
     sf_vals = Dict{Tuple{Int,String}, Tuple{Float64,Float64}}()
     for (pi, pk) in enumerate(peaks)
-        for (cut_name, h_after) in [("4×4", h_4x4), ("NN", h_ml)]
+        cuts = Tuple{String, Vector{Int}}[("4×4", h_4x4), ("NN", h_ml)]
+        h_dark === nothing || push!(cuts, ("dark", h_dark))
+        for (cut_name, h_after) in cuts
             n_fep_plus  = _count_in_window(h_after, pk.sig_lo, pk.sig_hi)
             n_fep_minus = _count_in_window(h_all, pk.sig_lo, pk.sig_hi) - n_fep_plus
             n_bck_plus_raw  = _count_in_window(h_after, pk.bg_lo1, pk.bg_hi1) +
                               _count_in_window(h_after, pk.bg_lo2, pk.bg_hi2)
             n_bck_minus_raw = (_count_in_window(h_all, pk.bg_lo1, pk.bg_hi1) +
                                _count_in_window(h_all, pk.bg_lo2, pk.bg_hi2)) - n_bck_plus_raw
-            n_bck_plus  = n_bck_plus_raw  * bg_ratio
-            n_bck_minus = n_bck_minus_raw * bg_ratio
+            n_bck_plus  = n_bck_plus_raw  * pk.bg_ratio
+            n_bck_minus = n_bck_minus_raw * pk.bg_ratio
             sf, σ_sf = survival_efficiency(n_fep_plus, n_fep_minus, n_bck_plus, n_bck_minus)
             sf_vals[(pi, cut_name)] = (sf, σ_sf)
         end
@@ -1070,27 +1690,81 @@ function plot_k40_k42_survival(
     sf_nn_k42, σ_nn_k42 = sf_vals[(2, "NN")]
     label_nn = @sprintf("After NN  —  ⁴⁰K: %.1f ± %.1f %%,  ⁴²K: %.1f ± %.1f %%",
         sf_nn_k40*100, σ_nn_k40*100, sf_nn_k42*100, σ_nn_k42*100)
+    label_dark = if h_dark !== nothing
+        sf_dark_k40, σ_dark_k40 = sf_vals[(1, "dark")]
+        sf_dark_k42, σ_dark_k42 = sf_vals[(2, "dark")]
+        @sprintf("No scintillation light  —  ⁴⁰K: %.1f ± %.1f %%,  ⁴²K: %.1f ± %.1f %%",
+                 sf_dark_k40*100, σ_dark_k40*100,
+                 sf_dark_k42*100, σ_dark_k42*100)
+    else
+        nothing
+    end
+
+    # Dynamic Y-range: fit both peaks after cuts (4×4 and NN) within view.
+    # `Before LAr veto` may extend above and gets clipped — that's intended.
+    x_lo, x_hi = 1430.0, 1550.0
+    in_view = (centers .>= x_lo) .& (centers .<= x_hi)
+    y_after_max = max(maximum(h_4x4[in_view]; init=0), maximum(h_ml[in_view]; init=0))
+    y_max = max(1.0, 1.18 * Float64(y_after_max))
 
     fig = with_theme(LegendMakie.LegendTheme) do
-        f = Figure(size=(1200, 500))
+        f = Figure(size=(1100, 550))
         ax = Axis(f[1, 1];
             xlabel="Energy (keV)", ylabel="Counts / 1 keV",
-            limits=((1440, 1540), (0, 250)))
+            limits=((x_lo, x_hi), (0, y_max)))
+
+        # Window markers — drawn first so data layers sit on top.
+        #   bg window  → diagonal hatching (`/`)
+        #   sig window → dense dotted vertical lines
+        function _hatch_window!(ax, xw_lo, xw_hi, yw_lo, yw_hi;
+                                spacing=1.8, span=8.0,
+                                color=(:gray25, 0.55), linewidth=0.8)
+            pts = Point2f[]
+            x = xw_lo - span
+            Δx, Δy = span, (yw_hi - yw_lo)
+            while x <= xw_hi
+                t_lo = max(0.0, (xw_lo - x) / Δx)
+                t_hi = min(1.0, (xw_hi - x) / Δx)
+                if t_lo < t_hi
+                    push!(pts, Point2f(x + t_lo*Δx, yw_lo + t_lo*Δy))
+                    push!(pts, Point2f(x + t_hi*Δx, yw_lo + t_hi*Δy))
+                end
+                x += spacing
+            end
+            linesegments!(ax, pts; color=color, linewidth=linewidth)
+        end
 
         for pk in peaks
-            lc = pk.band_color[1]
-            vlines!(ax, [pk.sig_lo, pk.sig_hi]; color=(lc, 0.6), linewidth=1.2, linestyle=:solid)
-            vlines!(ax, [pk.bg_lo1, pk.bg_hi2]; color=(lc, 0.35), linewidth=0.9, linestyle=:dash)
+            _hatch_window!(ax, pk.bg_lo1, pk.bg_hi1, 0.0, y_max;
+                           spacing=1.8, span=8.0,
+                           color=(:gray25, 0.55), linewidth=0.8)
+            _hatch_window!(ax, pk.bg_lo2, pk.bg_hi2, 0.0, y_max;
+                           spacing=1.8, span=8.0,
+                           color=(:gray25, 0.55), linewidth=0.8)
+            for x in pk.sig_lo:0.4:pk.sig_hi
+                vlines!(ax, [x]; color=(:gray20, 0.40),
+                        linewidth=0.5, linestyle=:dot)
+            end
         end
 
         lines!(ax, xs_all, ys_all;
-            color=(:gray65, 0.9), linewidth=1.2, label="Before LAr veto")
+            color=(:gray35, 1.0), linewidth=2.0, label="Before LAr veto")
+        # 4×4 = "ist-Zustand" → light blue fill
         band!(ax, xs_4x4, fill(0.0, length(xs_4x4)), ys_4x4;
-            color=(:cornflowerblue, 0.4), label=label_4x4)
+            color=(:skyblue1, 0.55), label=label_4x4)
+        # No-scintillation events = irreducible floor (no SiPM light → no veto
+        # can touch them) — dark blue fill so the layered story reads as
+        # bands stacking from above (4×4) down to the floor (No-Scint).
+        if label_dark !== nothing
+            xs_dark, ys_dark = _hist_xy(edges, h_dark)
+            band!(ax, xs_dark, fill(0.0, length(xs_dark)), ys_dark;
+                color=(:navyblue, 0.45), label=label_dark)
+        end
+        # NN sits between the two extremes — dark red line on top.
         lines!(ax, xs_ml, ys_ml;
-            color=:navy, linewidth=1.8, label=label_nn)
+            color=:firebrick, linewidth=2.6, label=label_nn)
 
-        axislegend(ax; position=:rt, labelsize=13, framevisible=true, padding=(8, 8, 6, 6))
+        axislegend(ax; position=:ct, labelsize=13, framevisible=true, padding=(8, 8, 6, 6))
         LegendMakie.add_watermarks!(; preliminary)
         f
     end
@@ -1098,3 +1772,121 @@ function plot_k40_k42_survival(
     @info "  Plot saved: $plot_path"
     return (sf_vals=sf_vals, plot_path=plot_path)
 end
+
+# ============================================================================
+# Per-HPGe SiPM attribution heatmap (Integrated Gradients)
+# ============================================================================
+# Companion to src/ml/interpretability.jl. The matrix is `n_hpge × n_sipm` and
+# is plotted as x = SiPM (in model permutation order), y = HPGe (sorted by
+# string_id then position_in_string). Vertical separators mark the four SiPM
+# groups (IB_top / IB_bottom / OB_top / OB_bottom); horizontal separators mark
+# HPGe-string boundaries.
+
+"""
+    _string_boundaries(string_ids::Vector{Int}) → Vector{Int}
+
+Indices `i` such that `string_ids[i] ≠ string_ids[i-1]`, used as horizontal
+separator positions between rows.
+"""
+function _string_boundaries(string_ids::AbstractVector{<:Integer})
+    bs = Int[]
+    for i in 2:length(string_ids)
+        if string_ids[i] != string_ids[i-1]
+            push!(bs, i)
+        end
+    end
+    return bs
+end
+
+"""
+    plot_attribution_heatmap(matrix, sipm_names, hpge_names; out_path, class_label, n_events,
+                             sipm_group_boundaries=Int[], sipm_group_labels=String[],
+                             hpge_string_ids=Int[], title_suffix="",
+                             colormap=:viridis, colorbar_max=nothing,
+                             colorbar_label="mean |IG|  (logit attribution)")
+
+Single-panel heatmap of attribution per (HPGe, SiPM). `matrix` shape is
+`(n_hpge × n_sipm)`. White grid lines mark SiPM-group boundaries (vertical)
+and HPGe-string boundaries (horizontal). `colorbar_max` lets you fix a
+shared color scale across multiple plots; if `nothing`, the per-plot max is
+used.
+"""
+function plot_attribution_heatmap(matrix::AbstractMatrix{<:Real},
+                                  sipm_names::AbstractVector{<:AbstractString},
+                                  hpge_names::AbstractVector{<:AbstractString};
+                                  out_path::String,
+                                  class_label::String,
+                                  n_events::Integer,
+                                  sipm_group_boundaries::AbstractVector{<:Integer} = Int[],
+                                  sipm_group_labels::AbstractVector{<:AbstractString} = String[],
+                                  hpge_string_ids::AbstractVector{<:Integer} = Int[],
+                                  title_suffix::String = "",
+                                  colormap = :viridis,
+                                  colorbar_max::Union{Real,Nothing} = nothing,
+                                  colorbar_label::String = "mean |IG|  (logit attribution)")
+    _HAS_LEGENDMAKIE || (@warn "  Skipping heatmap (CairoMakie/LegendMakie unavailable)"; return nothing)
+
+    H, S = size(matrix)
+    H == length(hpge_names) ||
+        error("plot_attribution_heatmap: matrix has $H rows but $(length(hpge_names)) HPGe names")
+    S == length(sipm_names) ||
+        error("plot_attribution_heatmap: matrix has $S cols but $(length(sipm_names)) SiPM names")
+
+    # Heatmap expects (length(x), length(y)) = (S, H), so transpose.
+    z = permutedims(Float32.(matrix))
+    cmax = colorbar_max === nothing ? (maximum(z) > 0 ? maximum(z) : 1f0) : Float32(colorbar_max)
+
+    fig = with_theme(LegendMakie.LegendTheme) do
+        f = Figure(size = (max(2200, 44 * S + 600), max(1500, 38 * H + 300)))
+        ax = Axis(f[1, 1];
+            xlabel = "", ylabel = "",
+            xticklabelrotation = π/2,
+            xticklabelsize = 22, yticklabelsize = 20,
+            xgridvisible = false, ygridvisible = false,
+        )
+        hm = heatmap!(ax, 1:S, 1:H, z;
+            colormap = colormap,
+            colorrange = (0f0, cmax))
+
+        ax.xticks = (1:S, collect(sipm_names))
+        ax.yticks = (1:H, collect(hpge_names))
+        ax.limits = ((0.5, S + 0.5), (0.5, H + 0.5))
+
+        # SiPM group separators (white, prominent grid)
+        for b in sipm_group_boundaries
+            (b > 1 && b <= S) || continue
+            vlines!(ax, [b - 0.5]; color = :white, linewidth = 3.0)
+        end
+        if !isempty(sipm_group_labels)
+            block_starts = vcat(1, collect(sipm_group_boundaries))
+            block_ends   = vcat(collect(sipm_group_boundaries) .- 1, S)
+            for (lbl, x0, x1) in zip(sipm_group_labels, block_starts, block_ends)
+                xc = (x0 + x1) / 2
+                text!(ax, xc, H + 0.5; text = lbl,
+                      align = (:center, :bottom), fontsize = 22, font = :bold,
+                      color = LegendMakie.AchatBlue, offset = (0.0, 8.0))
+            end
+        end
+
+        # HPGe string boundaries (white, prominent grid)
+        if !isempty(hpge_string_ids)
+            for b in _string_boundaries(hpge_string_ids)
+                hlines!(ax, [b - 0.5]; color = :white, linewidth = 3.0)
+            end
+        end
+
+        Colorbar(f[1, 2], hm; label = colorbar_label,
+                 labelsize = 22, ticklabelsize = 18)
+        colsize!(f.layout, 1, Relative(0.92))
+
+        LegendMakie.add_watermarks!(; preliminary = true, final = false, production = true)
+        f
+    end
+
+    mkpath(dirname(out_path))
+    save(out_path, fig; px_per_unit = 2)
+    @info "  Heatmap saved: $out_path"
+    return out_path
+end
+
+export plot_attribution_heatmap

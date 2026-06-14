@@ -34,13 +34,21 @@ function process_training(processing_config::PropDict, l200::LegendData, group_n
     # ── Load + unwrap training config ────────────────────────────────────────
     raw_cfg = load_metadata_config(processing_config, :training)
     isnothing(raw_cfg) && error("No training config found for group $group_name")
-    arch_name, cfg = unwrap_config(raw_cfg)
 
-    # Validate model kwarg against YAML architecture
+    # The processing_config `model:` kwarg, if set, overrides the YAML's
+    # `selected_architecture:` line. This lets the same per-group YAML carry
+    # multiple architecture blocks, with the active one chosen at the
+    # processing-config level (no YAML edits to switch).
     if !isempty(model)
-        model == arch_name || error(
-            "kwarg model='$model' does not match YAML architecture '$arch_name'")
+        if haskey(raw_cfg, model) && raw_cfg[model] isa Dict
+            raw_cfg["selected_architecture"] = model
+        else
+            avail = filter(k -> k != "selected_architecture", collect(keys(raw_cfg)))
+            error("kwarg model='$model' but no top-level block by that name in training YAML. " *
+                  "Available blocks: $avail")
+        end
     end
+    arch_name, cfg = unwrap_config(raw_cfg)
 
     tc = cfg["training"]
     seed = Int(get(tc, "seed", 1234))
@@ -92,20 +100,36 @@ function process_training(processing_config::PropDict, l200::LegendData, group_n
     # ── Build model via registry ─────────────────────────────────────────────
     model, layout = build_model(arch_name, cfg, actual_n_sipm)
 
-    # ── Assemble feature matrices ────────────────────────────────────────────
-    x_tr, f_tr = assemble_features(d_train, cfg, perm)
-    x_va, f_va = assemble_features(d_val,   cfg, perm)
-    x_te, f_te = assemble_features(d_test,  cfg, perm)
-    y_tr = reshape(d_train.y, 1, :)
-    y_va = reshape(d_val.y,   1, :)
-    y_te = reshape(d_test.y,  1, :)
+    # ── Assemble feature NamedTuples (skip nothing entries) ──────────────────
+    function _make_loader_inputs(data, cfg, perm)
+        nt = assemble_features(data, cfg, perm)
+        y  = reshape(data.y, 1, :)
+        # Drop any nothing entries (e.g. trig/mask/geom for MLP architecture).
+        kept = (; (k => v for (k,v) in pairs(nt) if v !== nothing)...)
+        return merge(kept, (label = y,))
+    end
+
+    nt_tr = _make_loader_inputs(d_train, cfg, perm)
+    nt_va = _make_loader_inputs(d_val,   cfg, perm)
+    nt_te = _make_loader_inputs(d_test,  cfg, perm)
 
     # Free raw data
     d_train_n = d_train.n; d_val_n = d_val.n; d_test_n = d_test.n
     d_train = nothing; d_val = nothing; d_test = nothing
     gpu_sync_gc()
 
-    @info @sprintf("  Feature dims: SiPM=%d  Det=%d", size(x_tr, 1), size(f_tr, 1))
+    # Logging dims
+    sipm_dim = haskey(nt_tr, :sipm) ? size(nt_tr.sipm, 1) : 0
+    det_dim  = haskey(nt_tr, :det)  ? size(nt_tr.det,  1) : 0
+    @info @sprintf("  Feature dims: SiPM=%d  Det=%d", sipm_dim, det_dim)
+    if haskey(nt_tr, :trig)
+        sz = size(nt_tr.trig)
+        @info @sprintf("  Trigger tensor: F=%d  max_K=%d  n_sipm=%d  N=%d", sz...)
+    end
+    if haskey(nt_tr, :geom)
+        sz = size(nt_tr.geom)
+        @info @sprintf("  Geometry tensor: G=%d  n_sipm=%d  N=%d", sz...)
+    end
 
     # ── Initialise model + device ────────────────────────────────────────────
     dev_fn, using_gpu = select_device()
@@ -120,9 +144,9 @@ function process_training(processing_config::PropDict, l200::LegendData, group_n
 
     # ── DataLoaders ──────────────────────────────────────────────────────────
     bs = Int(tc["batch_size"])
-    train_dl = DataLoader((x_tr, y_tr, f_tr); batchsize=bs, shuffle=true,  partial=true)
-    val_dl   = DataLoader((x_va, y_va, f_va); batchsize=bs, shuffle=false, partial=true)
-    test_dl  = DataLoader((x_te, y_te, f_te); batchsize=bs, shuffle=false, partial=true)
+    train_dl = DataLoader(nt_tr; batchsize=bs, shuffle=true,  partial=true)
+    val_dl   = DataLoader(nt_va; batchsize=bs, shuffle=false, partial=true)
+    test_dl  = DataLoader(nt_te; batchsize=bs, shuffle=false, partial=true)
 
     # ── Train ─────────────────────────────────────────────────────────────────
     @info @sprintf("  Training: %d epochs, batch=%d, lr=%.2e, optimizer=%s, AD=Zygote",
@@ -133,17 +157,17 @@ function process_training(processing_config::PropDict, l200::LegendData, group_n
     train_log_path = joinpath(log_dir, "$(group_name)_training_$(Dates.format(Dates.now(Dates.UTC), "yyyymmdd_HHMMSS")).csv")
 
     flush(stderr); flush(stdout)
-    best_ps, best_st, best_ep, best_vl = train_model(
+    best_ps, best_st, best_ep, best_vl, _ = train_model(
         model, ps, st, train_dl, val_dl, cfg, dev_fn; log_path=train_log_path)
 
     # ── Final evaluation on all splits (CPU, testmode) ────────────────────────
     best_st_eval = Lux.testmode(best_st)
     trl, tra = eval_loop(model, best_ps, best_st_eval,
-                          DataLoader((x_tr, y_tr, f_tr); batchsize=bs), identity)
+                          DataLoader(nt_tr; batchsize=bs), identity)
     vll, vla = eval_loop(model, best_ps, best_st_eval,
-                          DataLoader((x_va, y_va, f_va); batchsize=bs), identity)
+                          DataLoader(nt_va; batchsize=bs), identity)
     tel, tea = eval_loop(model, best_ps, best_st_eval,
-                          DataLoader((x_te, y_te, f_te); batchsize=bs), identity)
+                          DataLoader(nt_te; batchsize=bs), identity)
 
     @info @sprintf("  Final metrics — train: loss=%.4f acc=%.1f%%  val: loss=%.4f acc=%.1f%%  test: loss=%.4f acc=%.1f%%",
                    trl, tra * 100, vll, vla * 100, tel, tea * 100)
@@ -171,8 +195,8 @@ function process_training(processing_config::PropDict, l200::LegendData, group_n
         ),
 
         "input_dims" => Dict(
-            "sipm_feature_dim"  => Int(size(x_tr, 1)),
-            "det_feature_dim"   => Int(size(f_tr, 1)),
+            "sipm_feature_dim"  => sipm_dim,
+            "det_feature_dim"   => det_dim,
             "sipm_channels"     => actual_n_sipm,
         ),
 
@@ -190,12 +214,13 @@ function process_training(processing_config::PropDict, l200::LegendData, group_n
     save_model(save_path, best_ps, best_st, metadata)
 
     # ── Training report ──────────────────────────────────────────────────────
-    report_dir = joinpath(processing_config.paths.output.reports, group_name, "training")
+    # Per-run subfolder (`<arch>/<timestamp>/`) so multiple runs don't mix.
+    report_dir = joinpath(processing_config.paths.output.reports, group_name, "training", arch_name, ts)
     generate_training_report(metadata, cfg, arch_name, report_dir, group_name,
                              save_path, train_log_path)
 
     # ── Loss plot ────────────────────────────────────────────────────────────
-    plot_dir = joinpath(processing_config.paths.output.plots, group_name, "training", arch_name)
+    plot_dir = joinpath(processing_config.paths.output.plots, group_name, "training", arch_name, ts)
     plot_path = joinpath(plot_dir, "$(group_name)_$(arch_name)_$(ts)_loss.png")
     preliminary = get(Dict(processing_config.plots), :preliminary, false)
     plot_training_loss(train_log_path, plot_path, metadata; preliminary=preliminary)

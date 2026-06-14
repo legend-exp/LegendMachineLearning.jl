@@ -1,13 +1,13 @@
 #!/bin/bash -l
 # ============================================================================
-# SBATCH script: ML-based LAr Veto — Training on Raven-GPU (NVIDIA A100)
-# Runs: process_training only (requires GPU)
-# Usage: cd <project-root> && sbatch run_training.sh
+# SBATCH script: ML-based LAr Veto — HPO on Raven-GPU (NVIDIA A100)
+# Runs: process_hpo only (Hyperband search around train_model — needs GPU)
+# Usage: cd <project-root> && sbatch run_hpo.sh
 # ============================================================================
-#SBATCH -o generated/logs/train.out.%j
-#SBATCH -e generated/logs/train.err.%j
+#SBATCH -o generated/logs/hpo.out.%j
+#SBATCH -e generated/logs/hpo.err.%j
 #SBATCH -D .
-#SBATCH -J mlar_train
+#SBATCH -J mlar_hpo
 
 #SBATCH --ntasks=1
 #SBATCH --constraint="gpu"
@@ -15,11 +15,9 @@
 #SBATCH --cpus-per-task=18
 #SBATCH --mem=125000
 #SBATCH --mail-type=none
-#SBATCH --time=08:00:00
+#SBATCH --time=12:00:00
 
 # ── Resolve project root ────────────────────────────────────────────────────
-# Under SLURM, BASH_SOURCE points to /var/spool/slurmd/... (node-local copy),
-# so use SLURM_SUBMIT_DIR instead. For direct `bash run_training.sh`, use BASH_SOURCE.
 if [[ -n "$SLURM_SUBMIT_DIR" ]]; then
     PROJECT_DIR="$SLURM_SUBMIT_DIR"
 else
@@ -38,7 +36,6 @@ mkdir -p "$PROJECT_DIR/generated/logs"
 module purge
 module load gcc/14
 # NOTE: Do NOT load cuda module — CUDA.jl ships its own runtime via artifacts.
-# Loading system CUDA causes LD_LIBRARY_PATH conflicts that break CUDA.functional().
 
 export SKIP_PKG_SETUP=1
 export JULIA_NUM_PRECOMPILE_TASKS=1
@@ -53,14 +50,11 @@ echo "Node:       $(hostname)"
 echo "Date:       $(date)"
 echo "Project:    $PROJECT_DIR"
 echo "Data cfg:   $LEGEND_DATA_CONFIG"
-echo "CUDA:       $(module list 2>&1 | grep cuda)"
 echo "============================================"
 
-# ── GPU diagnostics ─────────────────────────────────────────────────────────
 echo ""
 echo "=== GPU Diagnostics ==="
 nvidia-smi 2>/dev/null || echo "nvidia-smi not available"
-echo ""
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "======================="
 echo ""
@@ -87,20 +81,17 @@ $JULIA_CMD --project="$PROJECT_DIR" -e '
     if CUDA.functional()
         println("GPU: ", CUDA.name(CUDA.device()))
     else
-        println("WARNING: CUDA not functional — training will use CPU")
+        println("WARNING: CUDA not functional — HPO will use CPU (very slow)")
     end
-' 2>&1 || true   # do not abort job if this check fails
+' 2>&1 || true
 
-# ── Run training (GPU + Zygote AD) ──────────────────────────────────────────
-# --only=process_training,process_prediction: training + inference both run on
-# this GPU node (prediction needs the trained model + GPU forward pass anyway).
-# CPU-only data prep (extraction/balancing/normalization) runs on a CPU node
-# via run_flow.sh.
-# Optional 1st positional arg: a single ML group to train (overrides
+# ── Run HPO (GPU + Hyperband + Zygote AD) ──────────────────────────────────
+# --only=process_hpo: skip extraction/balancing/normalization/training
+# Optional 1st positional arg: a single ML group to run (overrides
 # `datasets.active_group:` from processing_config.yaml). Lets you launch one
 # job per group on separate GPU nodes:
-#     sbatch -J mlar_train_g1 run_training.sh mlgroup001
-#     sbatch -J mlar_train_g2 run_training.sh mlgroup002
+#     sbatch -J mlar_hpo_g1 run_hpo.sh mlgroup001
+#     sbatch -J mlar_hpo_g2 run_hpo.sh mlgroup002
 GROUP_ARG=""
 if [[ -n "$1" ]]; then
     GROUP_ARG="--group $1"
@@ -109,7 +100,7 @@ fi
 stdbuf -oL -eL $JULIA_CMD --project="$PROJECT_DIR" \
     main.jl \
     -c config/processing_config.yaml \
-    --only=process_training,process_prediction \
+    --only=process_hpo \
     $GROUP_ARG
 
 echo "============================================"

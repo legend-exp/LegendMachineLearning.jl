@@ -14,11 +14,12 @@
 #SBATCH --cpus-per-task=72          # Julia manages parallelism internally via addprocs()
 #SBATCH --mem=234GB                 # ~7 workers × ~30GB each + master
 #SBATCH --mail-type=none
-#SBATCH --time=3:00:00
+#SBATCH --time=5:00:00
 #
-# Resource layout (mlgroup001 = 7 runs):
-#   Extraction:  7 workers × 9 threads + master(9) = 72 CPUs  (via Distributed.addprocs)
-#   Other steps: master only, 9 threads              =  9 CPUs  (rest idle)
+# Resource layout (one ML group = 6 runs in ml_groupings.yaml):
+#   Extraction:  6 workers × 11 threads + master ≈ 67 CPUs  (via Distributed.addprocs)
+#                heap-hint per worker ≈ 234GB / 7 ≈ 33 GB
+#   Other steps: master only, 72 threads = 72 CPUs  (rest idle)
 
 # ── Resolve project root ────────────────────────────────────────────────────
 # Under SLURM, BASH_SOURCE points to /var/spool/slurmd/... (node-local copy),
@@ -59,11 +60,27 @@ echo "============================================"
 
 cd "$PROJECT_DIR"
 
-# ── Run data processing flow (no GPU needed) ────────────────────────────────
-stdbuf -oL -eL julia --project="$PROJECT_DIR" \
+# ── Run data processing flow ────────────────────────────────────────────────
+# Which processors run is controlled entirely by `processors.<name>.enabled:`
+# in config/processing_config.yaml. Run on a CPU node — the GPU-bound steps
+# (process_training, process_prediction) only run if you explicitly enabled
+# them and you're OK with CPU fallback (training is impractically slow on CPU;
+# prediction works but is slower). For real GPU training use run_training.sh.
+# Optional 1st positional arg: a single ML group to process (overrides
+# `datasets.active_group:` from processing_config.yaml). Lets you parallelise
+# across several nodes:
+#     sbatch -J mlar_flow_g1 run_flow.sh mlgroup001
+#     sbatch -J mlar_flow_g2 run_flow.sh mlgroup002
+GROUP_ARG=""
+if [[ -n "$1" ]]; then
+    GROUP_ARG="--group $1"
+    echo "Group override (CLI): $1"
+fi
+stdbuf -oL -eL julia +1.11 --project="$PROJECT_DIR" \
     --threads=${JULIA_NUM_THREADS:-4} \
     main.jl \
-    -c config/processing_config.yaml
+    -c config/processing_config.yaml \
+    $GROUP_ARG
 
 echo "============================================"
 echo "Finished:   $(date)"

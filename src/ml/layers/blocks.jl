@@ -10,10 +10,12 @@
 # ── Activation lookup ────────────────────────────────────────────────────────
 
 const ACT_FNS = Dict{String, Function}(
-    "relu"  => relu,
-    "gelu"  => gelu,
-    "swish" => swish,
-    "tanh"  => tanh,
+    "relu"       => relu,
+    "gelu"       => gelu,
+    "swish"      => swish,
+    "tanh"       => tanh,
+    "leakyrelu"  => leakyrelu,    # NNlib default negative_slope = 0.01
+    "leaky_relu" => leakyrelu,    # user-friendly alias
 )
 
 """Look up an activation function by name (default: relu)."""

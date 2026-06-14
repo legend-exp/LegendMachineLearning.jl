@@ -26,6 +26,7 @@ include("normalization.jl")
 include("prediction.jl")
 include("plotting.jl")
 include("report.jl")
+include("geometry.jl")
 
 # Non-ML feature assembly (uses LH5, YAML — no CUDA/Lux dependency)
 include("features.jl")

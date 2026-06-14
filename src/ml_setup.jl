@@ -29,6 +29,10 @@ if !@isdefined(_ML_LOADED)
     include(joinpath(_ml_dir, "evaluation.jl"))
     include(joinpath(_ml_dir, "training_loop.jl"))
     include(joinpath(_ml_dir, "model_io.jl"))
+    include(joinpath(_ml_dir, "interpretability.jl"))
+
+    # ── HPO helpers (Hyperband around train_model) ───────────────────────
+    include(joinpath(_ml_dir, "hpo.jl"))
 
     const _ML_LOADED = true
 end

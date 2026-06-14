@@ -3,6 +3,12 @@
 # Reads windowed PE data from jlext (:wpe group, written by process_extraction).
 # Produces jlbal (inference, all events) and jlbalml (training, balanced).
 
+# Detectors to drop BEFORE balancing (applied to every dataset: sub500keV, forcedtrigger, pass_through).
+# Events whose leading HPGe is excluded are removed; excluded SiPMs are dropped from
+# sipm_detector_ids and the per-SiPM PE matrices.
+excluded_ged_detectors: [B00061B]
+excluded_sipm_detectors: []
+
 # Training event filter: exclude events matching these rules from jlbalml.
 # Events that pass all filters are balanced for ML training.
 ml_training_exclusion:
@@ -12,3 +18,4 @@ ml_training_exclusion:
 # Pass-through datasets: written to jlbal with real detector IDs, no balancing.
 pass_through:
   - physics
+  - physics_k40_k42

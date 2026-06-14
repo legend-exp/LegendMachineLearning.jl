@@ -47,13 +47,19 @@ export build_rawid_to_name
 # ============================================================================
 
 """
-    generate_extraction_report(results, report_dir, group_name, l200) → String
+    generate_extraction_report(results, ds_status, report_dir, group_name, l200) → String
 
-Write a Markdown extraction report summarizing all datasets.
+Write a Markdown extraction report summarizing all datasets. Datasets that
+appear in `ds_status` but not in `results` are listed with a failure block,
+so the report always reflects the true state of the run.
+
+`ds_status[name]` is expected to be a `NamedTuple` with fields
+`(n_read, n_filtered, n_chunks, status, error_msgs)`.
 Returns the path to the written report file.
 """
 function generate_extraction_report(
     results::Dict{String, PreparedDataset},
+    ds_status::Dict{String, <:NamedTuple},
     report_dir::String,
     group_name::String,
     l200::LegendData,
@@ -61,8 +67,18 @@ function generate_extraction_report(
     mkpath(report_dir)
     report_path = joinpath(report_dir, "extraction.md")
 
-    rawid_to_name = build_rawid_to_name(l200, group_name)
+    # Detector name lookup is only needed if any dataset succeeded.
+    rawid_to_name = isempty(results) ? Dict{UInt32,String}() :
+                                       build_rawid_to_name(l200, group_name)
     _det_name(rawid) = get(rawid_to_name, UInt32(rawid), string(rawid))
+
+    _status_icon(s::String) = s == "ok"      ? "✅ ok" :
+                              s == "partial" ? "⚠️ partial (some runs failed)" :
+                              s == "failed"  ? "❌ failed" :
+                              s == "no_data" ? "⚠️ no events passed filter" :
+                                               "⚠️ $s"
+
+    all_ds_names = sort(unique(vcat(collect(keys(results)), collect(keys(ds_status)))))
 
     open(report_path, "w") do io
         println(io, "# Extraction Report")
@@ -71,14 +87,71 @@ function generate_extraction_report(
         println(io, "**Generated:** $(Dates.now())  ")
         println(io, "")
 
-        for (ds_name, ds) in sort(collect(results); by=first)
-            s = ds.stats
+        # ── Top-level status summary so failures are visible at a glance ──
+        if !isempty(ds_status)
+            println(io, "## Summary")
+            println(io, "")
+            println(io, "| Dataset | Status | Events read | After filter | Final | Chunks |")
+            println(io, "|---------|--------|-------------|--------------|-------|--------|")
+            for ds_name in all_ds_names
+                st = get(ds_status, ds_name, (n_read=0, n_filtered=0, n_chunks=0,
+                                                status="missing", error_msgs=String[]))
+                final = haskey(results, ds_name) ? results[ds_name].n_events : 0
+                @printf(io, "| `%s` | %s | %d | %d | %d | %d |\n",
+                        ds_name, _status_icon(String(st.status)),
+                        st.n_read, st.n_filtered, final, st.n_chunks)
+            end
+            println(io, "")
+        end
+
+        for ds_name in all_ds_names
             println(io, "---")
             println(io, "## Dataset: `$ds_name`")
             println(io, "")
+
+            # ── Failed / no-data datasets get a status block, not stats ──
+            if !haskey(results, ds_name)
+                st = get(ds_status, ds_name, (n_read=0, n_filtered=0, n_chunks=0,
+                                                status="missing", error_msgs=String[]))
+                println(io, "**Status:** $(_status_icon(String(st.status)))  ")
+                @printf(io, "**Events read:** %d  \n", st.n_read)
+                @printf(io, "**After filter:** %d  \n", st.n_filtered)
+                @printf(io, "**Chunks written:** %d  \n", st.n_chunks)
+                println(io, "")
+                if !isempty(st.error_msgs)
+                    println(io, "<details><summary>Worker error(s) — $(length(st.error_msgs)) unique</summary>\n")
+                    println(io, "```")
+                    for em in st.error_msgs
+                        println(io, em)
+                    end
+                    println(io, "```")
+                    println(io, "</details>\n")
+                end
+                continue
+            end
+
+            ds = results[ds_name]
+            s  = ds.stats
+            st = get(ds_status, ds_name, nothing)
+
+            # Status line if we have it
+            if st !== nothing
+                println(io, "**Status:** $(_status_icon(String(st.status)))  ")
+                println(io, "")
+                if !isempty(st.error_msgs)
+                    println(io, "<details><summary>Worker error(s) — $(length(st.error_msgs)) unique</summary>\n")
+                    println(io, "```")
+                    for em in st.error_msgs
+                        println(io, em)
+                    end
+                    println(io, "```")
+                    println(io, "</details>\n")
+                end
+            end
+
             println(io, "| Metric | Value |")
             println(io, "|--------|-------|")
-            @printf(io, "| Events read | %d |\n", get(s, "events_read_total", 0))
+            @printf(io, "| Events read | %d |\n", get(s, "events_read", get(s, "events_read_total", 0)))
             @printf(io, "| Events after filter | %d |\n", get(s, "events_after_filter", 0))
             @printf(io, "| Events removed (NaN/Inf) | %d |\n", get(s, "events_nan_inf_removed", 0))
             @printf(io, "| **Events final** | **%d** |\n", get(s, "events_final", ds.n_events))
@@ -90,12 +163,26 @@ function generate_extraction_report(
             println(io, "")
 
             # SiPM detectors (collapsible)
+            # Per-SiPM activity breakdown:
+            #   Non-DC Triggers — count of unique-trigger entries (already
+            #     filtered to non-DC + ≥ trigger_threshold_pe)
+            #   Full / Prompt / Delayed > 0 PE — # events whose SUMMED PE in
+            #     that time window for THIS SiPM is non-zero. Quickly spots
+            #     SiPMs that are dead, masked-out or just inactive in this
+            #     dataset (e.g. all 0 for `forcedtrigger` is expected).
             println(io, "<details><summary>$(ds.n_sipms) SiPM detectors</summary>\n")
-            println(io, "| # | Detector | RawID | Non-DC Triggers |")
-            println(io, "|---|----------|-------|-----------------|")
+            println(io, "| # | Detector | RawID | Non-DC Triggers | Full > 0 PE | Prompt > 0 PE | Delayed > 0 PE |")
+            println(io, "|---|----------|-------|-----------------|-------------|---------------|----------------|")
+            n_full = size(ds.sipm_pe_sums, 1) > 0
+            n_prom = size(ds.sipm_pe_sums_prompt, 1) > 0
+            n_dely = size(ds.sipm_pe_sums_delayed, 1) > 0
             for (i, did) in enumerate(ds.sipm_detector_ids)
                 n_trigs = length(get(ds.per_det_raw_trig_pe, did, Float64[]))
-                @printf(io, "| %d | %s | %d | %d |\n", i, _det_name(did), did, n_trigs)
+                nf = n_full ? count(>(0.0), @view(ds.sipm_pe_sums[:,        i])) : 0
+                np = n_prom ? count(>(0.0), @view(ds.sipm_pe_sums_prompt[:,  i])) : 0
+                nd = n_dely ? count(>(0.0), @view(ds.sipm_pe_sums_delayed[:, i])) : 0
+                @printf(io, "| %d | %s | %d | %d | %d | %d | %d |\n",
+                            i, _det_name(did), did, n_trigs, nf, np, nd)
             end
             println(io, "</details>\n")
 
@@ -138,7 +225,10 @@ function generate_balancing_report(
     report_dir::String,
     group_name::String,
     exclusion_rules::Vector,
-    n_sub_ml::Int, n_ft_ml::Int, n_ft_valid::Int,
+    n_sub_ml::Int, n_ft_ml::Int, n_ft_valid::Int;
+    excluded_ged_names::Vector{String}=String[],
+    excluded_sipm_names::Vector{String}=String[],
+    exclusion_stats::Dict=Dict{String, NamedTuple}(),
 )
     mkpath(report_dir)
     path = joinpath(report_dir, "balancing.md")
@@ -155,6 +245,28 @@ function generate_balancing_report(
             end
         end
         println(io, "")
+
+        # ── Exclusions applied section ──────────────────────────────────
+        if !isempty(excluded_ged_names) || !isempty(excluded_sipm_names) || !isempty(exclusion_stats)
+            println(io, "## Exclusions applied")
+            println(io, "")
+            if !isempty(excluded_ged_names)
+                println(io, "**Excluded HPGe detectors:** ", join("`" .* excluded_ged_names .* "`", ", "), "  ")
+            end
+            if !isempty(excluded_sipm_names)
+                println(io, "**Excluded SiPM detectors:** ", join("`" .* excluded_sipm_names .* "`", ", "), "  ")
+            end
+            println(io, "")
+            if !isempty(exclusion_stats)
+                println(io, "| Dataset | Events dropped (HPGe excl.) | SiPM columns dropped |")
+                println(io, "|---------|----------------------------:|---------------------:|")
+                for name in sort(collect(keys(exclusion_stats)))
+                    st = exclusion_stats[name]
+                    @printf(io, "| %s | %d | %d |\n", name, st.n_events_dropped, st.n_sipms_dropped)
+                end
+                println(io, "")
+            end
+        end
 
         # Summary table
         println(io, "## Training (jlbalml)")
@@ -569,3 +681,99 @@ function generate_prediction_report(metadata::Dict, cfg::Dict, arch_name::String
     @info "  Prediction report saved: $report_path"
     return report_path
 end
+
+# ============================================================================
+# HPO Report
+# ============================================================================
+
+"""
+    generate_hpo_report(report_path, group_name, arch_name, ho, param_names,
+                        candidates, best_pairs, best_loss, best_res,
+                        R, eta, n_trials, elapsed_s) → String
+
+Markdown summary of one Hyperband HPO study. Lists best params, top-K trials
+sorted by val_loss, the search-space breakdown, and the Hyperband settings.
+"""
+function generate_hpo_report(report_path::String, group_name::String, arch_name::String,
+                              ho, param_names::Vector{String}, candidates,
+                              best_pairs::AbstractDict, best_loss::Real, best_res::Real,
+                              R::Int, eta::Int, n_trials::Int, elapsed_s::Real;
+                              top_k::Int = 15, metric_name::String = "val_loss")
+    mkpath(dirname(report_path))
+
+    # ho.history holds the parameter tuples in the order they were evaluated;
+    # ho.results holds the corresponding metric values. Sort to get the top
+    # trials (lower is better — Hyperopt minimises).
+    n_done = min(length(ho.history), length(ho.results))
+    pairs = [(ho.history[i], Float64(ho.results[i])) for i in 1:n_done]
+    sort!(pairs; by = x -> x[2])
+    top = first(pairs, min(top_k, n_done))
+
+    open(report_path, "w") do io
+        println(io, "# HPO Report — `$group_name` / `$arch_name`")
+        println(io, "")
+        println(io, "**Generated:** $(Dates.now())  ")
+        println(io, "**Search algorithm:** Hyperband (R=$R, η=$eta)  ")
+        println(io, "**Optimization metric:** `$metric_name` (lower is better)  ")
+        println(io, "**Trials run:** $n_trials  ")
+        println(io, "**Wall time:** $(round(elapsed_s/60; digits=1)) min  ")
+        println(io, "")
+
+        println(io, "## Best Trial")
+        println(io, "")
+        @printf(io, "**%s:** %.5f  \n", metric_name, best_loss)
+        # best_res can be NaN if ho.minimum collapsed to a bare Float64 and we
+        # had to recover the best from ho.history (see defensive unpack in
+        # process_hpo.jl). Don't crash the report in that case.
+        if isfinite(best_res)
+            @printf(io, "**resources:** %d epochs  \n", Int(round(best_res)))
+        else
+            println(io, "**resources:** unknown (recovered from history)  ")
+        end
+        println(io, "")
+        println(io, "| Parameter | Best Value |")
+        println(io, "|---|---|")
+        for n in param_names
+            v = get(best_pairs, n, "")
+            println(io, "| `$n` | `$v` |")
+        end
+        println(io, "")
+        println(io, "Best-config YAML written to `best_config.yaml` next to this report. ",
+                    "Paste the relevant fields into `metadata/training/$group_name.yaml` ",
+                    "to use them in subsequent training runs.")
+        println(io, "")
+
+        println(io, "## Top $(length(top)) Trials (lowest $metric_name)")
+        println(io, "")
+        println(io, "| rank | $metric_name | " * join(param_names, " | ") * " |")
+        println(io, "|---|---|" * join(fill("---", length(param_names)), "|") * "|")
+        for (i, (params_vec, loss)) in enumerate(top)
+            vals = join([string(v) for v in params_vec], " | ")
+            @printf(io, "| %d | %.5f | %s |\n", i, loss, vals)
+        end
+        println(io, "")
+
+        println(io, "## Search Space")
+        println(io, "")
+        println(io, "| Parameter | # values | Range |")
+        println(io, "|---|---|---|")
+        for (n, vals) in zip(param_names, candidates)
+            println(io, "| `$n` | $(length(vals)) | $(first(vals)) … $(last(vals)) |")
+        end
+        println(io, "")
+
+        println(io, "## Notes")
+        println(io, "")
+        println(io, "- Hyperband prunes weak trials early; the `resources` column in ",
+                    "`study.csv` shows the per-trial epoch budget. Trials with low resources ",
+                    "may have plateaued without enough training time — compare with the best ",
+                    "trial's `resources` value.")
+        println(io, "- All trials reuse the same train/val data loaded once at the start, ",
+                    "so comparison is fair.")
+        println(io, "- Per-trial training CSV logs are under `generated/logs/$group_name/hpo/$arch_name/trial_*.csv`.")
+    end
+
+    @info "  HPO report saved: $report_path"
+    return report_path
+end
+export generate_hpo_report

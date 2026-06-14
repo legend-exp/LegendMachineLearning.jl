@@ -1,13 +1,13 @@
 #!/bin/bash -l
 # ============================================================================
-# SBATCH script: ML-based LAr Veto — Training on Raven-GPU (NVIDIA A100)
-# Runs: process_training only (requires GPU)
-# Usage: cd <project-root> && sbatch run_training.sh
+# SBATCH script: ML-based LAr Veto — Per-HPGe SiPM attribution heatmap (GPU)
+# Runs: process_attribution only (Integrated Gradients via Zygote on GPU)
+# Usage: sbatch run_attribution.sh [<group>]   — or — bash run_attribution.sh [<group>]
 # ============================================================================
-#SBATCH -o generated/logs/train.out.%j
-#SBATCH -e generated/logs/train.err.%j
+#SBATCH -o generated/logs/attribution.out.%j
+#SBATCH -e generated/logs/attribution.err.%j
 #SBATCH -D .
-#SBATCH -J mlar_train
+#SBATCH -J mlar_attr
 
 #SBATCH --ntasks=1
 #SBATCH --constraint="gpu"
@@ -15,11 +15,9 @@
 #SBATCH --cpus-per-task=18
 #SBATCH --mem=125000
 #SBATCH --mail-type=none
-#SBATCH --time=08:00:00
+#SBATCH --time=01:00:00
 
 # ── Resolve project root ────────────────────────────────────────────────────
-# Under SLURM, BASH_SOURCE points to /var/spool/slurmd/... (node-local copy),
-# so use SLURM_SUBMIT_DIR instead. For direct `bash run_training.sh`, use BASH_SOURCE.
 if [[ -n "$SLURM_SUBMIT_DIR" ]]; then
     PROJECT_DIR="$SLURM_SUBMIT_DIR"
 else
@@ -31,47 +29,43 @@ DATA_CONFIG_FILE="$PROJECT_DIR/config/data_config.yaml"
 LEGEND_DATA_CONFIG="$(grep '^legend_data_config:' "$DATA_CONFIG_FILE" | sed 's/^legend_data_config:[[:space:]]*//')"
 export LEGEND_DATA_CONFIG
 
-# ── Log directory (ensure it exists) ────────────────────────────────────────
 mkdir -p "$PROJECT_DIR/generated/logs"
 
 # ── Environment setup ───────────────────────────────────────────────────────
 module purge
 module load gcc/14
-# NOTE: Do NOT load cuda module — CUDA.jl ships its own runtime via artifacts.
-# Loading system CUDA causes LD_LIBRARY_PATH conflicts that break CUDA.functional().
+# Do NOT load cuda module — CUDA.jl ships its own runtime via artifacts.
 
 export SKIP_PKG_SETUP=1
 export JULIA_NUM_PRECOMPILE_TASKS=1
 
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
-export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
-export JULIA_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
+NTHR=${SLURM_CPUS_PER_TASK:-8}
+export OMP_NUM_THREADS=$NTHR
+export MKL_NUM_THREADS=$NTHR
+export JULIA_NUM_THREADS=$NTHR
 
 echo "============================================"
-echo "Job:        $SLURM_JOB_ID"
+echo "Job:        ${SLURM_JOB_ID:-local}"
 echo "Node:       $(hostname)"
 echo "Date:       $(date)"
 echo "Project:    $PROJECT_DIR"
-echo "Data cfg:   $LEGEND_DATA_CONFIG"
-echo "CUDA:       $(module list 2>&1 | grep cuda)"
+echo "CPUs:       $NTHR"
 echo "============================================"
 
-# ── GPU diagnostics ─────────────────────────────────────────────────────────
 echo ""
-echo "=== GPU Diagnostics ==="
+echo "=== GPU diagnostics ==="
 nvidia-smi 2>/dev/null || echo "nvidia-smi not available"
-echo ""
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 echo "======================="
-echo ""
 
 cd "$PROJECT_DIR"
 
-# ── Julia version pin (1.12 + Zygote has pathological compilation; use 1.11) ─
+# Julia 1.11 — 1.12 + Zygote has pathological compile times with custom Lux
+# container layers. Same pin as run_training.sh.
 JULIA_CMD="julia +1.11"
 echo "Julia command: $JULIA_CMD (pinned to 1.11.x for Zygote compatibility)"
 
-# ── Purge stale CUDA caches (may have been compiled on login node without GPU) ─
+# ── Purge stale CUDA caches (may have been compiled on login node without GPU)
 JULIA_MAJOR_MINOR="$($JULIA_CMD -e 'print("v$(VERSION.major).$(VERSION.minor)")')"
 echo "Removing stale CUDA compiled caches (Julia $JULIA_MAJOR_MINOR)..."
 rm -rf ~/.julia/compiled/"$JULIA_MAJOR_MINOR"/CUDA_Runtime_jll/
@@ -79,7 +73,7 @@ rm -rf ~/.julia/compiled/"$JULIA_MAJOR_MINOR"/CUDA/
 rm -rf ~/.julia/compiled/"$JULIA_MAJOR_MINOR"/CUDA_Runtime_Discovery/
 echo "  Done — CUDA will recompile on this GPU node."
 
-# ── Ensure CUDA.jl is compiled on GPU node (picks up driver) ────────────────
+# ── Quick CUDA functional check ─────────────────────────────────────────────
 echo "Checking CUDA on GPU node..."
 $JULIA_CMD --project="$PROJECT_DIR" -e '
     using CUDA
@@ -87,29 +81,22 @@ $JULIA_CMD --project="$PROJECT_DIR" -e '
     if CUDA.functional()
         println("GPU: ", CUDA.name(CUDA.device()))
     else
-        println("WARNING: CUDA not functional — training will use CPU")
+        println("WARNING: CUDA not functional — will fall back to CPU")
     end
-' 2>&1 || true   # do not abort job if this check fails
+' 2>&1 || true
 
-# ── Run training (GPU + Zygote AD) ──────────────────────────────────────────
-# --only=process_training,process_prediction: training + inference both run on
-# this GPU node (prediction needs the trained model + GPU forward pass anyway).
-# CPU-only data prep (extraction/balancing/normalization) runs on a CPU node
-# via run_flow.sh.
-# Optional 1st positional arg: a single ML group to train (overrides
-# `datasets.active_group:` from processing_config.yaml). Lets you launch one
-# job per group on separate GPU nodes:
-#     sbatch -J mlar_train_g1 run_training.sh mlgroup001
-#     sbatch -J mlar_train_g2 run_training.sh mlgroup002
+# ── Optional positional arg: single ML group override ──────────────────────
 GROUP_ARG=""
 if [[ -n "$1" ]]; then
     GROUP_ARG="--group $1"
     echo "Group override (CLI): $1"
 fi
+
 stdbuf -oL -eL $JULIA_CMD --project="$PROJECT_DIR" \
+    --threads=$NTHR \
     main.jl \
     -c config/processing_config.yaml \
-    --only=process_training,process_prediction \
+    --only=process_attribution \
     $GROUP_ARG
 
 echo "============================================"

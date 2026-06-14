@@ -28,14 +28,38 @@ end
 """
     unwrap_config(raw::Dict) → (arch_name::String, cfg::Dict)
 
-Extract the single top-level key as architecture name and return the inner dict.
+Extract the architecture name from a training YAML and return the inner config.
+
+Two supported layouts:
+
+1. **Single architecture** (legacy / minimal):
+       mlp_detector_concat:
+         input: ...
+
+2. **Multi-architecture with selector** (extended):
+       selected_architecture: hierarchical_set
+       mlp_detector_concat: { ... }
+       hierarchical_set:    { ... }
+
+   The `selected_architecture:` key at the top picks which sibling block to
+   use; other architecture blocks are ignored. Use this when you want both
+   configs to live in the same per-group YAML and switch with a single line.
 """
 function unwrap_config(raw::Dict)
-    ks = collect(keys(raw))
-    length(ks) == 1 || error(
-        "Training YAML must have exactly one top-level key (architecture name), got: $ks")
-    arch_name = String(first(ks))
-    cfg = raw[arch_name]
+    if haskey(raw, "selected_architecture")
+        arch_name = String(raw["selected_architecture"])
+        haskey(raw, arch_name) || error(
+            "selected_architecture='$arch_name' but no top-level block by that name. " *
+            "Available blocks: $(filter(k -> k != "selected_architecture", collect(keys(raw))))")
+        cfg = raw[arch_name]
+    else
+        ks = filter(k -> k != "selected_architecture", collect(keys(raw)))
+        length(ks) == 1 || error(
+            "Training YAML must have exactly one top-level architecture key " *
+            "(or use `selected_architecture:` to pick), got: $ks")
+        arch_name = String(first(ks))
+        cfg = raw[arch_name]
+    end
     cfg isa Dict || error("Value under '$arch_name' must be a dict, got $(typeof(cfg))")
     return arch_name, cfg
 end

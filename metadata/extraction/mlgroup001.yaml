@@ -1,59 +1,96 @@
 # Extraction configuration for ML-based LAr Veto — mlgroup001
 # Unified: event filter + keys + time windows per dataset.
-
-excluded_ged_detectors: []  
-# No detectors excluded for this ML group
+#
+# Per-dataset `enabled: true|false` (default true) lets you re-extract
+# selectively (extraction is the slowest step by far). When you set a dataset
+# to `enabled: false`, its existing jlext file from a previous run is left
+# intact, so balancing/normalization can still use it. To re-extract only
+# `physics_k40_k42`, set the other three to `enabled: false`.
+#
+# NOTE: HPGe / SiPM exclusion is handled by the *balancing* processor only
+# (see metadata/balancing/<group>.yaml `excluded_ged_detectors:`); extraction
+# writes all events.
 datasets:
   training:
     sub500keV:
-      event_filter: "!aux.pulser.aux_trig && !aux.forcedtrigger.aux_trig && ged_pmt.is_valid_muon && geds.is_valid_trig && geds.is_valid_qc && geds.is_valid_hit && geds.multiplicity == 1 && geds.max_e_cusp_ctc_cal < 500u\"keV\""
+      enabled: true
+      event_filter: "!aux.pulser.aux_trig && !aux.forcedtrigger.aux_trig && !aux.muonveto.aux_trig && geds.is_valid_trig && geds.is_valid_qc && geds.is_valid_hit && geds.multiplicity == 1 && geds.max_e_cusp_ctc_cal < 500u\"keV\""
       keys:
         spms: [detector, trig_max_trap_cal, trig_pos_trap, trig_max_trap_is_dc]
         geds: [detector, max_e_cusp_ctc_cal, t0_start, max_e_det_idxs]
       spms_keys: {pe_cal: trig_max_trap_cal, trig_pos: trig_pos_trap, is_dc: trig_max_trap_is_dc}
       summed_trigger_time_window:
-        full:    {reference: ged_t0, before_us: 1.0, after_us: 5.0}
-        prompt:  {reference: ged_t0, before_us: 1.0, after_us: 1.0}
-        delayed: {reference: ged_t0, before_us: -1.0, after_us: 5.0}
+        full:    {reference: ged_t0, before_us: 1.5, after_us: 5.0}
+        prompt:  {reference: ged_t0, before_us: 1.5, after_us: 0.5}
+        delayed: {reference: ged_t0, before_us: -0.5, after_us: 5.0}
       unique_trigger_time_window:
         reference: ged_t0
-        before_us: 10.0
-        after_us: 10.0
+        before_us: 6.0
+        after_us: 6.0
       trigger_threshold_pe: 0.6
       multiplicity_threshold_pe: 0.6
 
     forcedtrigger:
+      enabled: true
       event_filter: "!aux.pulser.aux_trig && aux.forcedtrigger.aux_trig"
       keys:
         spms: [detector, trig_max_trap_cal, trig_pos_trap, trig_max_trap_is_dc]
         geds: [detector]
       spms_keys: {pe_cal: trig_max_trap_cal, trig_pos: trig_pos_trap, is_dc: trig_max_trap_is_dc}
       summed_trigger_time_window:
-        full:    {reference: fixed, center_us: 47.0, before_us: 1.0, after_us: 5.0}
-        prompt:  {reference: fixed, center_us: 47.0, before_us: 1.0, after_us: 1.0}
-        delayed: {reference: fixed, center_us: 47.0, before_us: -1.0, after_us: 5.0}
+        # forcedtrigger has no HPGe → use a fixed window centered at the forced
+        # trigger position (15 µs into the waveform). center_us is read from the
+        # `full` block by extraction.jl; prompt+delayed share that anchor.
+        full:    {reference: fixed, center_us: 15.0, before_us: 1.5, after_us: 5.0}
+        prompt:  {reference: fixed, center_us: 15.0, before_us: 1.5, after_us: 0.5}
+        delayed: {reference: fixed, center_us: 15.0, before_us: -0.5, after_us: 5.0}
       unique_trigger_time_window:
         reference: fixed
-        center_us: 47.0
-        before_us: 10.0
-        after_us: 10.0
+        center_us: 15.0
+        before_us: 6.0
+        after_us: 6.0
       trigger_threshold_pe: 0.6
       multiplicity_threshold_pe: 0.6
 
   physics:
     physics:
-      event_filter: "!aux.pulser.aux_trig && !aux.forcedtrigger.aux_trig && ged_pmt.is_valid_muon && geds.is_valid_trig && geds.is_valid_qc && geds.is_valid_hit && geds.multiplicity == 1 && geds.max_e_cusp_ctc_cal >= 25u\"keV\" && geds.max_e_cusp_ctc_cal < 5500u\"keV\""
+      enabled: true
+      event_filter: "!aux.pulser.aux_trig && !aux.forcedtrigger.aux_trig && !aux.muonveto.aux_trig && geds.is_valid_trig && geds.is_valid_qc && geds.is_valid_hit && geds.multiplicity == 1 && geds.max_e_cusp_ctc_cal >= 25u\"keV\" && geds.max_e_cusp_ctc_cal < 5500u\"keV\""
       keys:
         spms: [detector, trig_max_trap_cal, trig_pos_trap, trig_max_trap_is_dc]
         geds: [detector, max_e_cusp_ctc_cal, t0_start, max_e_det_idxs]
       spms_keys: {pe_cal: trig_max_trap_cal, trig_pos: trig_pos_trap, is_dc: trig_max_trap_is_dc}
       summed_trigger_time_window:
-        full:    {reference: ged_t0, before_us: 1.0, after_us: 5.0}
-        prompt:  {reference: ged_t0, before_us: 1.0, after_us: 1.0}
-        delayed: {reference: ged_t0, before_us: -1.0, after_us: 5.0}
+        full:    {reference: ged_t0, before_us: 1.5, after_us: 5.0}
+        prompt:  {reference: ged_t0, before_us: 1.5, after_us: 0.5}
+        delayed: {reference: ged_t0, before_us: -0.5, after_us: 5.0}
       unique_trigger_time_window:
         reference: ged_t0
-        before_us: 10.0
-        after_us: 10.0
+        before_us: 6.0
+        after_us: 6.0
+      trigger_threshold_pe: 0.6
+      multiplicity_threshold_pe: 0.6
+
+    # K40/K42 energy subset (1440-1550 keV) — covers the K40 (1460.8 keV) and
+    # K42 (1524.7 keV) signal+sideband windows used by `compute_k40_threshold`
+    # and `compute_k42_sf_at_k40_threshold` (= same windows the prediction-time
+    # `plot_k40_k42_survival` uses), with a couple of keV margin. Smaller than
+    # the full 0–5500 keV physics set, so each HPO trial pays only a tiny
+    # forward-pass cost when `objective.metric == k42_sf`.
+    physics_k40_k42:
+      enabled: true
+      event_filter: "!aux.pulser.aux_trig && !aux.forcedtrigger.aux_trig && !aux.muonveto.aux_trig && geds.is_valid_trig && geds.is_valid_qc && geds.is_valid_hit && geds.multiplicity == 1 && geds.max_e_cusp_ctc_cal >= 1440u\"keV\" && geds.max_e_cusp_ctc_cal < 1550u\"keV\""
+      keys:
+        spms: [detector, trig_max_trap_cal, trig_pos_trap, trig_max_trap_is_dc]
+        geds: [detector, max_e_cusp_ctc_cal, t0_start, max_e_det_idxs]
+      spms_keys: {pe_cal: trig_max_trap_cal, trig_pos: trig_pos_trap, is_dc: trig_max_trap_is_dc}
+      summed_trigger_time_window:
+        full:    {reference: ged_t0, before_us: 1.5, after_us: 5.0}
+        prompt:  {reference: ged_t0, before_us: 1.5, after_us: 0.5}
+        delayed: {reference: ged_t0, before_us: -0.5, after_us: 5.0}
+      unique_trigger_time_window:
+        reference: ged_t0
+        before_us: 6.0
+        after_us: 6.0
       trigger_threshold_pe: 0.6
       multiplicity_threshold_pe: 0.6

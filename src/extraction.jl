@@ -5,7 +5,8 @@
 # I/O helpers live in src/io.jl.  Report generation in src/report.jl.
 
 using LegendDataManagement: ljl_propfunc
-using TypedTables: Table, columnnames
+using PropertyFunctions: PropertyFunctions
+using TypedTables: Table
 using LegendHDF5IO: lh5open
 using Unitful
 
@@ -22,6 +23,11 @@ prep_to_us(x::Unitful.Quantity)  = Float64(ustrip(u"μs", x))
 
 export prep_strip, prep_to_ns, prep_to_us
 
+# Δt = t_max_pe(SiPM mode) − t0_hpge — absolute SiPM-trigger window
+const _DT_T_LO_US     = 40.0
+const _DT_T_HI_US     = 60.0
+const _DT_N_TIME_BINS = 100
+
 # ============================================================================
 # Event Filter Parsing
 # ============================================================================
@@ -31,6 +37,11 @@ function parse_event_filter(filter_string::String)
     ljl_propfunc(cleaned)
 end
 export parse_event_filter
+
+# Top-level property names referenced by a PropertyFunction. The published
+# PropertyFunctions.jl (v0.2.x) does not export an accessor — the input
+# columns are encoded as the first type parameter of `PropertyFunction{...}`.
+_propfunc_input_columns(pf) = typeof(pf).parameters[1]::Tuple{Vararg{Symbol}}
 
 # ============================================================================
 # Key Selection — preserves jlevt Table/VoV structure
@@ -67,6 +78,29 @@ function collect_run_filekeys(l200::LegendData, group_def)
     run_filekeys
 end
 export collect_run_filekeys
+
+"""
+    _k40_first_filekey(l200, group_def) → FileKey or nothing
+
+First valid :phy filekey for the group (used to derive channelinfo ordering).
+Falls back to :cal via `start_filekey` if no :phy files exist.
+"""
+function _k40_first_filekey(l200::LegendData, group_def)
+    for (period_str, runs_def) in group_def
+        period, runs = parse_period_run(String(period_str), runs_def)
+        for run in runs
+            fks = try
+                filter(!in(bad_filekeys(l200)), search_disk(FileKey, l200.tier[:jlevt, :phy, period, run]))
+            catch; FileKey[] end
+            !isempty(fks) && return first(fks)
+            try
+                return start_filekey(l200, (period, run, :phy))
+            catch; end
+        end
+    end
+    nothing
+end
+
 
 # ============================================================================
 # Windowed PE — per-event inner loop
@@ -151,6 +185,10 @@ function compute_windowed_pe(evt::Table, ds_cfg::Dict, ds_name::String)
     det_ids = Vector{Vector{UInt32}}()
     sums = Float64[]; mults = Int[]; sums_p = Float64[]; mults_p = Int[]; sums_d = Float64[]; mults_d = Int[]
     ged_dets = UInt32[]; ged_e = Float64[]; ged_t0v = Float64[]
+    # Δt = t_max_pe(SiPM mode in [40,60] µs) − t0_hpge
+    delta_t_max_pe_us = Float64[]; sizehint!(delta_t_max_pe_us, n_total)
+    dt_hist_buf = zeros(Int, _DT_N_TIME_BINS)
+    dt_bin_w_us = (_DT_T_HI_US - _DT_T_LO_US) / _DT_N_TIME_BINS
     # Raw triggers in unique window
     trig_det_ids_all = Vector{Vector{UInt32}}()
     trig_times_all   = Vector{Vector{Float64}}()
@@ -216,6 +254,26 @@ function compute_windowed_pe(evt::Table, ds_cfg::Dict, ds_name::String)
         push!(trig_det_ids_all, evt_trig_det)
         push!(trig_times_all, evt_trig_t)
         push!(trig_pes_all, evt_trig_pe)
+
+        # Δt = t_max_pe(SiPM mode in absolute [40,60] µs) − t0_hpge.
+        # Per-trigger cleaning: DC excluded + PE ≥ trig_thresh (same as raw-trigger loop).
+        fill!(dt_hist_buf, 0)
+        for d in eachindex(trig_pe), t in eachindex(trig_pe[d])
+            Bool(trig_dc[d][t]) && continue
+            pe_val = prep_strip(trig_pe[d][t])
+            (!isfinite(pe_val) || pe_val < trig_thresh) && continue
+            tp_us = prep_to_ns(trig_pos[d][t]) / 1000.0
+            (tp_us < _DT_T_LO_US || tp_us >= _DT_T_HI_US) && continue
+            bi = clamp(floor(Int, (tp_us - _DT_T_LO_US) / dt_bin_w_us) + 1, 1, _DT_N_TIME_BINS)
+            dt_hist_buf[bi] += 1
+        end
+        push!(delta_t_max_pe_us,
+            if has_ged_t0 && maximum(dt_hist_buf) > 0
+                bmax = argmax(dt_hist_buf)
+                (_DT_T_LO_US + (bmax - 0.5) * dt_bin_w_us) - t0_us
+            else
+                NaN
+            end)
     end
 
     # ── Build matrices (events × n_sipms) ────────────────────────────────
@@ -240,7 +298,7 @@ function compute_windowed_pe(evt::Table, ds_cfg::Dict, ds_name::String)
 
     PreparedDataset(ds_name, n_events, n_sipms, sipm_ids,
         mat, mat_p, mat_d, sums, mults, sums_p, mults_p, sums_d, mults_d,
-        ged_dets, ged_e, ged_t0v,
+        ged_dets, ged_e, ged_t0v, delta_t_max_pe_us,
         trig_det_ids_all, trig_times_all, trig_pes_all,
         per_det_raw_pe, valid_idxs, stats)
 end
@@ -297,6 +355,7 @@ function _merge_prepared_datasets(preps::Vector{PreparedDataset})
         reduce(vcat, p.ged_detector_id for p in preps),
         reduce(vcat, p.ged_energy_keV for p in preps),
         reduce(vcat, p.ged_t0_us for p in preps),
+        reduce(vcat, p.delta_t_max_pe_us for p in preps),
         merged_trig_det, merged_trig_t, merged_trig_pe,
         merged_raw_pe, collect(1:n_total),
         Dict{String,Any}("events_final" => n_total, "n_sipms" => n_sipms))
@@ -320,6 +379,7 @@ function _write_wpe_group(ds, prep::PreparedDataset)
         ged_detector_id            = prep.ged_detector_id,
         ged_energy_keV             = prep.ged_energy_keV,
         ged_t0_us                  = prep.ged_t0_us,
+        delta_t_max_pe_us          = prep.delta_t_max_pe_us,
     )
     ds[:wpe] = _fix_vov(wpe)
     ds["sipm_detector_ids"] = prep.sipm_detector_ids
@@ -350,37 +410,57 @@ function extract_run_worker(
         acc_keys  = Dict(ext.name => Table[] for ext in ext_specs)
         acc_stats = Dict(ext.name => (n_read=0, n_filtered=0) for ext in ext_specs)
 
+        # Per-spec read plan: parsed filter + union of top-level groups
+        # referenced by filter and keys_config (drives PropSel of read_ldata)
+        spec_plan = map(ext_specs) do ext
+            filter_pf  = parse_event_filter(ext.filter_string)
+            top_groups = Tuple(unique((
+                _propfunc_input_columns(filter_pf)...,
+                Symbol.(collect(keys(ext.keys_config)))...,
+            )))
+            (; ext, filter_pf, top_groups)
+        end
+
+        isempty(spec_plan) && return Dict{String, NamedTuple}()
+
         for b in 1:n_batches
             batch_fks = fks[((b-1)*fk_batch_size+1):min(b*fk_batch_size, length(fks))]
-            evt = read_ldata(l200, DataTier(:jlevt), batch_fks)
-            n_raw = length(evt)
 
-            for ext in ext_specs
-                sel = findall(parse_event_filter(ext.filter_string).(evt))
+            # Cheap raw event count. The no-det `read_ldata` path on jlevt
+            # works against actual top-level subgroups of the tier (`:geds`,
+            # `:aux`, ...), not the flat-namespaced leaf names. The previous
+            # `(:timestamp,)` failed because there is no top-level `timestamp`.
+            # `:geds` is guaranteed to exist (every spec filter references it).
+            # Fall back to `-1` if it ever fails so the worker keeps going.
+            n_raw = try
+                length(read_ldata((:geds,), l200, (DataTier(:jlevt), batch_fks)))
+            catch e
+                @warn "raw-count read failed, falling back to n_filt for stats" exception=e
+                -1
+            end
 
-                # Exclude blacklisted HPGe detectors
-                excl_ids = get(ext, :excluded_ged_ids, UInt32[])
-                if !isempty(excl_ids) && hasproperty(evt, :geds) &&
-                   hasproperty(evt.geds, :max_e_det_idxs) && hasproperty(evt.geds, :detector)
-                    sel = filter(sel) do i
-                        det_idx = max(1, Int(evt.geds.max_e_det_idxs[i]))
-                        ged_arr = evt.geds.detector[i]
-                        ged_id = (1 <= det_idx <= length(ged_arr)) ? UInt32(ged_arr[det_idx]) : UInt32(0)
-                        ged_id ∉ excl_ids
-                    end
-                end
+            for sp in spec_plan
+                ext = sp.ext
 
-                n_filt = length(sel)
+                # Push filter into read_ldata: only filtered events come back.
+                # NOTE: HPGe blacklist exclusion is no longer applied here — it
+                # lives exclusively in process_balancing (uses the
+                # `excluded_ged_detectors:` list from metadata/balancing/<group>.yaml).
+                evt_sel = read_ldata(sp.top_groups, l200, (DataTier(:jlevt), batch_fks);
+                                     filterby = sp.filter_pf)
+
+                n_filt = length(evt_sel)
                 prev = acc_stats[ext.name]
                 acc_stats[ext.name] = (n_read=prev.n_read + n_raw, n_filtered=prev.n_filtered + n_filt)
                 n_filt == 0 && continue
 
-                evt_sel = evt[sel][:]
                 push!(acc_keys[ext.name], _fix_vov(select_keys_from_table(evt_sel, ext.keys_config)))
                 push!(acc_preps[ext.name], compute_windowed_pe(evt_sel, ext.ds_cfg, ext.name))
+
+                evt_sel = nothing
             end
 
-            evt = nothing; GC.gc()
+            GC.gc()
         end
 
         # Write one chunk file per dataset for this run
@@ -388,7 +468,8 @@ function extract_run_worker(
         for ext in ext_specs
             preps = acc_preps[ext.name]; tables = acc_keys[ext.name]; stats = acc_stats[ext.name]
             if isempty(preps)
-                result[ext.name] = (n_read=stats.n_read, n_filtered=stats.n_filtered, chunk_path="")
+                result[ext.name] = (n_read=stats.n_read, n_filtered=stats.n_filtered,
+                                     chunk_path="", error_msg="")
                 continue
             end
             combined_tbl  = _fix_vov(reduce(vcat, tables))
@@ -400,12 +481,15 @@ function extract_run_worker(
                 _write_wpe_group(ds, combined_prep)
             end
             stats.n_filtered > 0 && @info "  $period-$run [$(ext.name)]: $(stats.n_filtered)/$(stats.n_read)"
-            result[ext.name] = (n_read=stats.n_read, n_filtered=stats.n_filtered, chunk_path=chunk_path)
+            result[ext.name] = (n_read=stats.n_read, n_filtered=stats.n_filtered,
+                                 chunk_path=chunk_path, error_msg="")
         end
         return result
     catch e
         @error "Error processing run $period-$run" exception=(e, catch_backtrace())
-        return Dict(ext.name => (n_read=0, n_filtered=0, chunk_path="") for ext in ext_specs)
+        err_str = sprint(showerror, e)
+        return Dict(ext.name => (n_read=0, n_filtered=0, chunk_path="",
+                                  error_msg="$period-$run: $err_str") for ext in ext_specs)
     end
 end
 export extract_run_worker

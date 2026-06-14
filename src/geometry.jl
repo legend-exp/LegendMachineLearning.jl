@@ -125,30 +125,39 @@ function load_hpge_extra_meta(pygeom_path::String, timestamp::DateTime)
     config_files = parsed_entries[idx].apply
     @info "Using extra_meta configs for timestamp" timestamp=timestamp configs=config_files
     
-    # Load and merge all apply configs
+    # Load and merge all apply configs.
+    # NOTE: validity entries stack configs (e.g. p18 = [p15-config, p18-config]),
+    # and a later config may *partially* override an entry — e.g. the p18 config
+    # only sets `minishroud_delta_length_in_mm` for strings 1 & 7. We therefore
+    # DEEP-merge per-entry: a shallow `merged[k] = v` would drop `radius_in_mm` /
+    # `angle_in_deg`, silently collapsing those strings onto the (220, 0)
+    # fallback in `build_hpge_geometry` (the cause of strings 1/7 overlapping).
+    deepmerge!(dst::AbstractDict, src::AbstractDict) = begin
+        for (k, v) in src
+            if v isa AbstractDict && get(dst, k, nothing) isa AbstractDict
+                deepmerge!(dst[k], v)
+            else
+                dst[k] = v
+            end
+        end
+        dst
+    end
     merged_hpges = Dict{Any, Any}()
     merged_hpge_strings = Dict{Any, Any}()
-    
+
     for config_file in config_files
         config_path = joinpath(extra_meta_dir, config_file)
         if !isfile(config_path)
             @warn "Config file not found" config=config_file
             continue
         end
-        
+
         raw = YAML.load_file(config_path; dicttype=Dict{Any, Any})
-        
-        # Merge hpges (later configs override earlier)
-        hpges = get(raw, "hpges", Dict{Any, Any}())
-        for (k, v) in hpges
-            merged_hpges[k] = v
-        end
-        
-        # Merge hpge_string
-        hpge_strings = get(raw, "hpge_string", Dict{Any, Any}())
-        for (k, v) in hpge_strings
-            merged_hpge_strings[k] = v
-        end
+
+        # Merge hpges / hpge_string (later configs override earlier; partial
+        # entries are merged into, not replacing, the existing entry).
+        deepmerge!(merged_hpges,        get(raw, "hpges",       Dict{Any, Any}()))
+        deepmerge!(merged_hpge_strings, get(raw, "hpge_string", Dict{Any, Any}()))
     end
     
     @debug "Loaded extra_meta" n_hpges=length(merged_hpges) n_strings=length(merged_hpge_strings)
@@ -912,3 +921,283 @@ function write_relative_geometry_yaml(output_path::String, group_name::String,
     @info "Relative geometry YAML written" path=output_path n_hpge=n_hpge n_sipm=n_sipm
     output_path
 end
+
+# ============================================================================
+# Orchestration helpers — used by processors/process_geometry.jl
+# ============================================================================
+
+"""
+    collect_periods_runs(group_def) → Vector{Tuple{String,String}}
+
+Convert group definition PropDict to sorted list of (period, run) tuples.
+"""
+function collect_periods_runs(group_def)
+    periods_runs = Tuple{String, String}[]
+    for period in keys(group_def)
+        for run in group_def[period]
+            push!(periods_runs, (string(period), string(run)))
+        end
+    end
+    sort!(periods_runs)
+end
+export collect_periods_runs
+
+"""
+    collect_detector_statuses(l200, periods_runs)
+        → (hpge_statuses, sipm_statuses, filekeys)
+
+Walk all (period, run) pairs and accumulate per-detector status
+(processable/usability, geometry consistency) for both HPGe and SiPM systems.
+"""
+function collect_detector_statuses(l200::LegendData, periods_runs::Vector{Tuple{String,String}})
+    hpge_statuses = Dict{String, DetectorStatus}()
+    sipm_statuses = Dict{String, SiPMStatus}()
+    filekeys_collected = FileKey[]
+
+    for (period, run) in periods_runs
+        # Prefer :phy start_filekey — it resolves to the canonical phy-run start
+        # timestamp, under which the detector metadata (processable / usability)
+        # is valid for this run. Fall back to :cal only if :phy is unavailable.
+        sel = (DataPeriod(period), DataRun(run))
+        filekey, category = try
+            (start_filekey(l200, (sel..., :phy)), :phy)
+        catch
+            try
+                @warn "No :phy filekey — falling back to :cal timestamp" period=period run=run
+                (start_filekey(l200, (sel..., :cal)), :cal)
+            catch
+                @warn "Skipping run — no :phy or :cal filekey" period=period run=run
+                continue
+            end
+        end
+        @info "Resolving detector status" period=period run=run category=category filekey=string(filekey) timestamp=DateTime(filekey)
+        push!(filekeys_collected, filekey)
+
+        chinfo_geds = try channelinfo(l200, filekey; system=:geds)
+        catch e; @warn "geds channelinfo failed" period=period run=run error=e; nothing end
+        if chinfo_geds !== nothing
+            for i in 1:length(chinfo_geds)
+                name = string(chinfo_geds.detector[i])
+                get!(hpge_statuses, name, DetectorStatus(name))
+                add_run_status!(hpge_statuses[name], period, run,
+                    chinfo_geds.processable[i], chinfo_geds.usability[i],
+                    chinfo_geds.detstring[i], chinfo_geds.position[i],
+                    chinfo_geds.rawid[i])
+            end
+        end
+
+        chinfo_spms = try channelinfo(l200, filekey; system=:spms)
+        catch e; @warn "spms channelinfo failed" period=period run=run error=e; nothing end
+        if chinfo_spms !== nothing
+            for i in 1:length(chinfo_spms)
+                name = string(chinfo_spms.detector[i])
+                fiber_str = String(string(chinfo_spms.fiber[i]))
+                barrel_str = String(fiber_str[1:2])
+                position_str = chinfo_spms.position[i] == 1 ? "top" : "bottom"
+                get!(sipm_statuses, name, SiPMStatus(name))
+                add_sipm_run_status!(sipm_statuses[name], period, run,
+                    chinfo_spms.processable[i], chinfo_spms.usability[i],
+                    barrel_str, fiber_str, position_str, chinfo_spms.rawid[i])
+            end
+        end
+    end
+    (hpge_statuses, sipm_statuses, filekeys_collected)
+end
+export collect_detector_statuses
+
+"""
+    build_hpge_geometry(hpge_statuses, hpges, hpge_strings, diodes_dir) → Dict{String,Any}
+
+Build the HPGe geometry output dict: loads diode geometry, groups detectors by
+string, computes z positions, fills entries via `build_detector_entry`, and
+applies the `scaled_angle` / `scaled_z_center` post-pass.
+"""
+function build_hpge_geometry(hpge_statuses::Dict{String, DetectorStatus},
+                             hpges, hpge_strings, diodes_dir::String)
+    processable = filter(p -> is_ever_processable(p.second), hpge_statuses)
+    @info "HPGe detectors with processable=true: $(length(processable))"
+
+    # Group by string
+    string_dets = Dict{Int, Vector{StringDetectorInfo}}()
+    for (name, status) in processable
+        status.string_id === nothing && continue
+        dg = load_diode_geometry(diodes_dir, name)
+        dg === nothing && (@warn "Missing diode geometry" detector=name; continue)
+        rod = get_detector_rodlength(hpges, name)
+        rod = rod === nothing ? 103.5 : rod
+        push!(get!(string_dets, status.string_id, StringDetectorInfo[]),
+              StringDetectorInfo(name, status.position_in_string, dg.height_in_mm, rod))
+    end
+
+    z_positions = Dict{String, NamedTuple}()
+    for (_, dets) in string_dets
+        merge!(z_positions, compute_string_z_positions(dets))
+    end
+
+    output = Dict{String, Any}()
+    for (name, status) in sort(collect(processable); by=first)
+        dg = load_diode_geometry(diodes_dir, name)
+        dg === nothing && continue
+        sr, sa = get_string_geometry(hpge_strings, status.string_id)
+        if sr === nothing || sa === nothing
+            @warn "No radius/angle for string $(status.string_id) in extra_meta — " *
+                  "falling back to (220 mm, 0°); detectors of this string will " *
+                  "overlap others at that fallback position" detector=name
+        end
+        sr = sr === nothing ? 220.0 : sr
+        sa = sa === nothing ? 0.0 : sa
+        rod = get_detector_rodlength(hpges, name); rod = rod === nothing ? 103.5 : rod
+        z = get(z_positions, name, (z_top=0.0, z_center=0.0, z_bottom=0.0))
+        output[name] = build_detector_entry(name, status, dg, sr, sa, rod, z)
+    end
+
+    # Post-pass: scaled_angle + scaled_z_center
+    all_z = Float64[e["detector_position"]["cylind_coords"]["z_center"]["value"] for e in values(output)]
+    min_z, max_z = isempty(all_z) ? (0.0, 0.0) : extrema(all_z)
+    range_z = max_z - min_z
+    for e in values(output)
+        pos = e["detector_position"]
+        a = pos["cylind_coords"]["angle"]["value"]
+        z = pos["cylind_coords"]["z_center"]["value"]
+        pos["scaled_angle"]    = round(a / 360.0; digits=6)
+        pos["scaled_z_center"] = range_z ≈ 0.0 ? 0.5 : round((z - min_z) / range_z; digits=6)
+    end
+    output
+end
+export build_hpge_geometry
+
+"""
+    build_sipm_geometry(sipm_statuses) → Dict{String,Any}
+
+Build the SiPM geometry output dict from collected statuses.
+"""
+function build_sipm_geometry(sipm_statuses::Dict{String, SiPMStatus})
+    processable = filter(p -> is_sipm_ever_processable(p.second), sipm_statuses)
+    @info "SiPM detectors with processable=true: $(length(processable))"
+    output = Dict{String, Any}()
+    for (name, status) in sort(collect(processable); by=first)
+        output[name] = build_sipm_entry(name, status)
+    end
+    output
+end
+export build_sipm_geometry
+
+# ============================================================================
+# Detector-status Markdown report (colour-coded table per (period, run))
+# ============================================================================
+
+# Colour map: emoji + HTML span background
+# proc+on → green, proc+ac → yellow, proc+off → orange, !proc → red, missing → dark
+const _STATUS_CELL = Dict(
+    :on      => ("🟢", "#b6f5a0", "on"),
+    :ac      => ("🟡", "#fff3a0", "ac"),
+    :off     => ("🟠", "#ffcf8a", "off"),
+    :notproc => ("🔴", "#ffa0a0", "–"),
+    :missing => ("⚫", "#333333", "–"),
+)
+
+function _status_cell(run_str::String, status)
+    if run_str in status.processable_false
+        e, bg, lbl = _STATUS_CELL[:notproc]
+        return "<span style=\"background-color:$bg\">$e $lbl</span>"
+    elseif run_str in status.processable_true
+        key = run_str in status.usable_on ? :on :
+              run_str in status.usable_ac ? :ac :
+              run_str in status.usable_off ? :off : :notproc
+        e, bg, lbl = _STATUS_CELL[key]
+        return "<span style=\"background-color:$bg\">$e $lbl</span>"
+    else
+        e, bg, lbl = _STATUS_CELL[:missing]
+        return "<span style=\"background-color:$bg;color:#fff\">$e $lbl</span>"
+    end
+end
+
+# SiPM variant (no :ac state)
+function _status_cell_sipm(run_str::String, status)
+    if run_str in status.processable_false
+        e, bg, lbl = _STATUS_CELL[:notproc]
+        return "<span style=\"background-color:$bg\">$e $lbl</span>"
+    elseif run_str in status.processable_true
+        key = run_str in status.usable_on ? :on :
+              run_str in status.usable_off ? :off : :notproc
+        e, bg, lbl = _STATUS_CELL[key]
+        return "<span style=\"background-color:$bg\">$e $lbl</span>"
+    else
+        e, bg, lbl = _STATUS_CELL[:missing]
+        return "<span style=\"background-color:$bg;color:#fff\">$e $lbl</span>"
+    end
+end
+
+function _write_status_table(io::IO, title::String,
+                             detectors::Vector{String},
+                             statuses::Dict{String, <:Any},
+                             periods_runs::Vector{Tuple{String,String}},
+                             cell_fn)
+    println(io, "## $title")
+    println(io, "")
+    isempty(detectors) && (println(io, "_No processable detectors._\n"); return)
+
+    header = "| Period-Run | " * join(detectors, " | ") * " |"
+    sep    = "|" * repeat("---|", length(detectors) + 1)
+    println(io, header)
+    println(io, sep)
+    for (p, r) in periods_runs
+        run_str = "$p-$r"
+        row = String["`$run_str`"]
+        for det in detectors
+            status = get(statuses, det, nothing)
+            push!(row, status === nothing ?
+                "<span style=\"background-color:#333333;color:#fff\">⚫ –</span>" :
+                cell_fn(run_str, status))
+        end
+        println(io, "| ", join(row, " | "), " |")
+    end
+    println(io, "")
+end
+
+"""
+    generate_detector_status_report(hpge_statuses, sipm_statuses, periods_runs,
+                                    report_path, group_name)
+
+Write a colour-coded Markdown report listing all detectors that are processable
+in at least one run, with one row per (period, run) showing
+processable + usability state.
+"""
+function generate_detector_status_report(
+    hpge_statuses::Dict{String, DetectorStatus},
+    sipm_statuses::Dict{String, SiPMStatus},
+    periods_runs::Vector{Tuple{String,String}},
+    report_path::String,
+    group_name::String,
+)
+    mkpath(dirname(report_path))
+    hpge_dets = sort(collect(keys(filter(p -> is_ever_processable(p.second),     hpge_statuses))))
+    sipm_dets = sort(collect(keys(filter(p -> is_sipm_ever_processable(p.second), sipm_statuses))))
+
+    open(report_path, "w") do io
+        println(io, "# Detector Status Report")
+        println(io, "")
+        println(io, "**Group:** `$group_name`  ")
+        println(io, "**Generated:** $(Dates.now())  ")
+        println(io, "**Period-Runs:** $(length(periods_runs))  ")
+        println(io, "**HPGe ever processable:** $(length(hpge_dets))  ")
+        println(io, "**SiPM ever processable:** $(length(sipm_dets))  ")
+        println(io, "")
+        println(io, "## Legend")
+        println(io, "")
+        println(io, "| Symbol | Meaning | Background |")
+        println(io, "|---|---|---|")
+        println(io, "| <span style=\"background-color:#b6f5a0\">🟢 on</span>  | processable + usability `on`  | green |")
+        println(io, "| <span style=\"background-color:#fff3a0\">🟡 ac</span>  | processable + usability `ac` (HPGe only) | yellow |")
+        println(io, "| <span style=\"background-color:#ffcf8a\">🟠 off</span> | processable + usability `off` | orange |")
+        println(io, "| <span style=\"background-color:#ffa0a0\">🔴 –</span>   | not processable in this run   | red |")
+        println(io, "| <span style=\"background-color:#333333;color:#fff\">⚫ –</span> | detector not listed for this run | dark |")
+        println(io, "")
+        _write_status_table(io, "HPGe detectors", hpge_dets, hpge_statuses, periods_runs, _status_cell)
+        _write_status_table(io, "SiPM detectors", sipm_dets, sipm_statuses, periods_runs, _status_cell_sipm)
+    end
+    @info "Detector-status report saved" path=report_path
+    report_path
+end
+export generate_detector_status_report
+

@@ -9,7 +9,26 @@
 # ============================================================================
 
 """
-    predict_with_rules(model, ps, st, xs, xd, event_sum_pe;
+    _slice_along_last(arr, idxs) → Array
+
+Slice a 2/3/4-D array along its last (sample) dimension by `idxs`.
+"""
+function _slice_along_last(arr::AbstractArray, idxs::AbstractVector{<:Integer})
+    nd = ndims(arr)
+    return selectdim(arr, nd, idxs) |> collect
+end
+
+"""
+    _slice_inputs(inputs::NamedTuple, idxs) → NamedTuple
+
+Subset every array in a model-input NamedTuple along its last (sample) dim.
+"""
+function _slice_inputs(inputs::NamedTuple, idxs::AbstractVector{<:Integer})
+    return NamedTuple{keys(inputs)}(map(v -> _slice_along_last(v, idxs), values(inputs)))
+end
+
+"""
+    predict_with_rules(model, ps, st, inputs::NamedTuple, event_sum_pe;
                        pe_hard_veto=25f0, batch_size=2048) → Vector{Float32}
 
 Compute predictions with rule-based overrides:
@@ -17,14 +36,17 @@ Compute predictions with rule-based overrides:
   - pe_sum >= pe_hard_veto → pred = 1.0  (definite veto)
   - else                   → model prediction (sigmoid of logit)
 
-The `event_sum_pe` is always the **full-window** PE sum (−1 to 5 µs).
-Only events in the "model zone" (0 < pe_sum < pe_hard_veto) are passed
-through the neural network.
+`inputs` is the NamedTuple produced by `assemble_features` — architecture-
+agnostic: the model's `Lux.apply(::ArchType, ::NamedTuple, ps, st)` method
+selects the fields it needs.
+
+Events with `0 < pe_sum < pe_hard_veto` are passed through the neural net
+in mini-batches.
 """
-function predict_with_rules(model, ps, st, xs::Matrix{Float32}, xd::Matrix{Float32},
+function predict_with_rules(model, ps, st, inputs::NamedTuple,
                             event_sum_pe::Vector{Float32};
                             pe_hard_veto::Float32=25f0, batch_size::Int=2048)
-    n = size(xs, 2)
+    n = length(event_sum_pe)
     preds = Vector{Float32}(undef, n)
     st_eval = Lux.testmode(st)
 
@@ -52,12 +74,12 @@ function predict_with_rules(model, ps, st, xs::Matrix{Float32}, xd::Matrix{Float
     # Run model only on events in 0 < pe_sum < pe_hard_veto
     if n_model > 0
         model_idxs = findall(model_mask)
-        xs_m = xs[:, model_idxs]
-        xd_m = xd[:, model_idxs]
+        inputs_m = _slice_inputs(inputs, model_idxs)
 
         for i in 1:batch_size:n_model
             j = min(i + batch_size - 1, n_model)
-            ŷ, st_eval = Lux.apply(model, (xs_m[:, i:j], xd_m[:, i:j]), ps, st_eval)
+            batch_inputs = _slice_inputs(inputs_m, i:j)
+            ŷ, st_eval = Lux.apply(model, batch_inputs, ps, st_eval)
             preds[model_idxs[i:j]] .= vec(σ.(ŷ))
         end
     end

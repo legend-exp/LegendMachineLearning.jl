@@ -9,4 +9,4 @@ paths:
   legend_pygeom: /ptmp/jonsc/analysis-scripts/sipm-analysis/legend-pygeom-l200
 
 # LegendData config (provides jlevt tier, legend-metadata, etc.)
-legend_data_config: /ptmp/oschulz/legend/data/l200/tmp/jl-v0.6.0dev5/config.json
+legend_data_config: /ptmp/oschulz/legend/data/l200/tmp/jl-v0.6.0dev8/config.json

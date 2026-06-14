@@ -241,6 +241,9 @@ mutable struct PreparedDataset
     ged_energy_keV::Vector{Float64}
     ged_t0_us::Vector{Float64}
 
+    # Δt = t_max_pe(SiPM mode in absolute [40,60] µs) − ged_t0_us; NaN if undefined
+    delta_t_max_pe_us::Vector{Float64}
+
     # Raw triggers in unique_trigger_time_window (flat per event)
     trigger_det_ids::Vector{Vector{UInt32}}
     trigger_times_us::Vector{Vector{Float64}}
@@ -304,6 +307,10 @@ function _read_wpe_from_lh5(path::String)
         trig_pe  = [Float64[] for _ in 1:n_events]
     end
 
+    delta_t = hasproperty(wpe, :delta_t_max_pe_us) ?
+              Vector{Float64}(wpe.delta_t_max_pe_us) :
+              fill(NaN, n_events)
+
     PreparedDataset(
         "", n_events, n_sipms, Vector{UInt32}(sipm_ids),
         mat, mat_p, mat_d,
@@ -316,6 +323,7 @@ function _read_wpe_from_lh5(path::String)
         Vector{UInt32}(wpe.ged_detector_id),
         Vector{Float64}(wpe.ged_energy_keV),
         Vector{Float64}(wpe.ged_t0_us),
+        delta_t,
         trig_det, trig_t, trig_pe,
         Dict{UInt32, Vector{Float64}}(),
         collect(1:n_events),

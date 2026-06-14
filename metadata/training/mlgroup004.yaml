@@ -1,4 +1,8 @@
-# mlgroup004 — p18 deep, DetConcatMLP
+# mlgroup004 — p16 + p18 + p19 (combined, 58 SiPMs)
+#
+# Architecture is picked at the `processing_config.yaml` level via the
+# `model:` kwarg of process_training / process_prediction.
+
 mlp_detector_concat:
   input:
     sipm:
@@ -13,22 +17,120 @@ mlp_detector_concat:
     hpge:
       enabled: true
       features: [scaled_angle, scaled_z_center]
-      output_dim: 24
+      output_dim: 16
       hidden_width: 64
       concat_after_layers: 0
   architecture:
-    hidden_widths: [512, 256, 128, 64]
-    activation: tanh
-    dropout: 0.26
+    hidden_widths: [1024, 512, 216, 128]
+    activation: relu
+    dropout: 0.25              # raised from 0.23 — dampen mild overfit (train<val at end)
     batch_norm: true
   training:
-    epochs: 350
-    batch_size: 1024
-    learning_rate: 8e-4
-    weight_decay: 3.36e-3
+    epochs: 500                # raised from 500 — last run hit best at E499, no plateau
+    batch_size: 2048
+    learning_rate: 0.0017
+    weight_decay: 1e-2
     optimizer: adamw
     seed: 1234
-    early_stopping_patience: 30
+    early_stopping_patience: 50   # tightened from 100 — gives the longer run room to stop cleanly
     lr_scheduler: cosine
-    lr_min: 1.0e-6
+    lr_min: 1.0e-5
     warmup_timeout: 300
+hierarchical_set:
+  input:
+    sipm:
+      ordering:
+        enabled: true
+        groups: [IB_top, IB_bottom, OB_top, OB_bottom]
+      geometry: [cos_proximity, scaled_delta_z]
+    triggers:
+      features: [trig_time_scaled, trig_pe_scaled]
+      max_per_sipm: 16
+      pad_value: 0.0
+    hpge:
+      enabled: true
+      features: [scaled_angle, scaled_z_center]
+      output_dim: 16
+      hidden_width: 64
+  architecture:
+    phi:
+      hidden_widths: [32, 32]
+      activation: gelu
+      dropout: 0.15           # was 0.1 — slight bump
+      batch_norm: false
+    pooling:
+      ops: [sum, max]
+    sipm_mlp:
+      hidden_widths: [48]
+      activation: gelu
+      dropout: 0.20           # was 0.1 — stronger regularization here
+      batch_norm: false       # cuDNN BN inference path fails on K·N·B reshape
+    event_pooling:
+      ops: [mean, max]
+    tail:
+      hidden_widths: [128, 64]
+      activation: tanh
+      dropout: 0.35           # was 0.23 — biggest tail-overfit lever
+      batch_norm: true
+  training:
+    epochs: 100               # was 500 — val plateaued by ep 3, 100 is plenty
+    batch_size: 4096          # was 1024 — 4× speedup on A100, fits in 40GB
+    learning_rate: 8e-4       # was 5e-4 — scale up with batch (≈√4 rule)
+    weight_decay: 5e-3        # was 1e-3 — bit more weight decay
+    optimizer: adamw
+    seed: 1234
+    early_stopping_patience: 15   # was 50 — val plateaus fast, no point waiting
+    lr_scheduler: cosine
+    lr_min: 1.0e-5
+    warmup_timeout: 300
+    loss: bce
+
+set_transformer:
+  input:
+    sipm:
+      ordering:
+        enabled: true
+        groups: [IB_top, IB_bottom, OB_top, OB_bottom]
+      geometry: [cos_proximity, scaled_delta_z]
+    triggers:
+      features: [trig_time_scaled, trig_pe_scaled]
+      max_per_sipm: 16
+      pad_value: 0.0
+    hpge:
+      enabled: true
+      features: [scaled_angle, scaled_z_center]
+      output_dim: 16
+      hidden_width: 64
+  architecture:
+    embed:
+      out_dim: 64                  # D — common embedding width
+      activation: gelu
+      layer_norm: true
+    isab:
+      n_layers: 2                  # L — depth of ISAB stack
+      n_heads: 4
+      n_inducing: 16               # M — bottleneck size (cost is O(N·M))
+      ffn_hidden: 128
+      attention_dropout: 0.1
+    pma:
+      n_seeds: 1                   # k=1 for binary classification
+      n_heads: 4
+    tail:
+      hidden_widths: [128, 64]
+      activation: tanh
+      dropout: 0.30
+      batch_norm: true
+  training:
+    epochs: 100
+    batch_size: 1024              # raised from 256 — earlier OOM may have been a Zygote spike;
+                                  # if it OOMs again drop to 512 (attn ∝ batch·K·N·M·heads)
+    learning_rate: 1.5e-4
+    weight_decay: 5e-3
+    optimizer: adamw
+    seed: 1234
+    early_stopping_patience: 15
+    lr_scheduler: cosine
+    lr_min: 1.0e-5
+    warmup_timeout: 300
+    eval_every: 5                 # validate every N epochs to skip ~50s of CPU work
+    loss: bce

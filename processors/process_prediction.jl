@@ -79,8 +79,10 @@ function process_prediction(processing_config::PropDict, l200::LegendData, group
     ts = get(metadata, "timestamp_utc", Dates.format(Dates.now(Dates.UTC), "yyyymmdd_HHMMSS"))
     suffix = "$(group_name)_$(arch_name)_$(ts)"
 
-    plot_base   = joinpath(processing_config.paths.output.plots, group_name, "prediction", arch_name)
-    report_base = joinpath(processing_config.paths.output.reports, group_name, "prediction", arch_name)
+    # Per-run subfolder (`<arch>/<timestamp>/`) so each model's plots and
+    # report don't mix with other timestamps.
+    plot_base   = joinpath(processing_config.paths.output.plots, group_name, "prediction", arch_name, ts)
+    report_base = joinpath(processing_config.paths.output.reports, group_name, "prediction", arch_name, ts)
 
     # ── Prediction config (thresholds, hard classification) ──────────────────
     pred_cfg = load_metadata_config(processing_config, :prediction)
@@ -108,8 +110,10 @@ function process_prediction(processing_config::PropDict, l200::LegendData, group
         data = load_prediction_tier(path, tier_key, cfg)
         @info @sprintf("  Loaded %d events", data.n)
 
-        xs, xd = assemble_features(data, cfg, sipm_perm)
-        pred_ml  = predict_with_rules(nn_model, ps, st, xs, xd, data.event_sum_pe; pe_hard_veto)
+        nt = assemble_features(data, cfg, sipm_perm)
+        # Drop nothing entries (e.g. trig/mask for MLP arch) before passing to model
+        inputs = (; (k => v for (k,v) in pairs(nt) if v !== nothing)...)
+        pred_ml  = predict_with_rules(nn_model, ps, st, inputs, data.event_sum_pe; pe_hard_veto)
         pred_4x4 = compute_pred_4x4(data.event_sum_pe, data.event_multiplicity)
 
         n_zero  = count(pred_ml .== 0f0)
@@ -142,6 +146,13 @@ function process_prediction(processing_config::PropDict, l200::LegendData, group
             m = match(r"l200-\w+-(\w+)-tier_jlnorm\.lh5", f)
             m === nothing && continue
             ds_name = m.captures[1]
+
+            # Skip the K40/K42-windowed subset — it's only used by HPO.
+            # Prediction tier + plots are produced from the full physics dataset.
+            if ds_name == "physics_k40_k42"
+                @info "  Skipping $ds_name (excluded from prediction)"
+                continue
+            end
 
             extra_file = joinpath(norm_dir, f)
             @info "  ─── jlnorm/$ds_name → jlpred/$ds_name ───"
@@ -190,8 +201,11 @@ function process_prediction(processing_config::PropDict, l200::LegendData, group
                 # Physics plots
                 plot_physics_energy_spectrum(ged_e, pred_4x4, veto_ml_vec,
                     joinpath(plot_base, "$(suffix)_$(ds_name)_energy_spectrum.png"))
+                plot_physics_zoom_1000_1300_keV(ged_e, pred_4x4, veto_ml_vec,
+                    joinpath(plot_base, "$(suffix)_$(ds_name)_energy_spectrum_1000_1300keV.png"))
                 plot_k40_k42_survival(ged_e, pred_4x4, veto_ml_vec,
-                    joinpath(plot_base, "$(suffix)_$(ds_name)_k40_k42_spectrum.png"))
+                    joinpath(plot_base, "$(suffix)_$(ds_name)_k40_k42_spectrum.png");
+                    event_sum_pe=data.event_sum_pe)
             end
         end
     end

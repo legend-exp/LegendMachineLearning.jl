@@ -9,7 +9,10 @@
 
 """
     train_model(model, ps, st, train_dl, val_dl, cfg, dev_fn; log_path) →
-        (best_ps, best_st, best_ep, best_vl)
+        (best_ps, best_st, best_ep, best_vl, best_tl)
+
+`best_tl` is the train_loss at the same epoch as `best_vl` — used by the HPO
+composite objective to compute the train↔val gap (overfit penalty).
 
 Full training loop with:
   - Warmup compilation step (Zygote)
@@ -40,15 +43,19 @@ function train_model(model, ps, st, train_dl, val_dl, cfg, dev_fn;
     @info "  Optimiser ready (Zygote AD, Lux.Training API)"
 
     # ── Loss closure for Lux.Training ────────────────────────────────────
+    # `data` is a NamedTuple batch from MLUtils.DataLoader with a `:label`
+    # field plus arbitrary input arrays (sipm, det, geom, trig, mask, …).
     function _train_loss(m, p, s, data)
-        xs_d, y_d, xd_d = data
-        ŷ, new_st = Lux.apply(m, (xs_d, xd_d), p, s)
+        y_d = data.label
+        inputs = Base.structdiff(data, NamedTuple{(:label,)})
+        ŷ, new_st = Lux.apply(m, inputs, p, s)
         return loss_fn(ŷ, y_d), new_st, (logits=ŷ,)
     end
 
     eval_every = Int(get(tc, "eval_every", 1))
 
     best_vl = typemax(Float32)
+    best_tl = typemax(Float32)
     best_ep = 0
     best_ps = fmap(_snap, train_state.parameters)
     best_st = fmap(_snap, train_state.states)
@@ -72,13 +79,11 @@ function train_model(model, ps, st, train_dl, val_dl, cfg, dev_fn;
     @info "  Warmup: compiling forward+backward (Zygote)..."
     warmup_t0 = time()
 
-    let data = first(train_dl)
-        xs_d = dev_fn(data[1])
-        y_d  = dev_fn(data[2])
-        xd_d = dev_fn(data[3])
+    let data_cpu = first(train_dl)
+        data = fmap(dev_fn, data_cpu)
 
         (_, loss_w, _, train_state) = Training.single_train_step!(
-            ad_backend, _train_loss, (xs_d, y_d, xd_d), train_state)
+            ad_backend, _train_loss, data, train_state)
 
         @info @sprintf("  [warmup] complete: loss=%.4f (%.1fs)", loss_w, time() - warmup_t0)
         flush(stderr); flush(stdout)
@@ -99,15 +104,13 @@ function train_model(model, ps, st, train_dl, val_dl, cfg, dev_fn;
         ep_t0   = time()
 
         for (bi, raw_data) in enumerate(train_dl)
-            xs_d = dev_fn(raw_data[1])
-            y_d  = dev_fn(raw_data[2])
-            xd_d = dev_fn(raw_data[3])
+            data = fmap(dev_fn, raw_data)
 
             (_, loss_val, stats, train_state) = Training.single_train_step!(
-                ad_backend, _train_loss, (xs_d, y_d, xd_d), train_state)
+                ad_backend, _train_loss, data, train_state)
 
             ep_loss += Float32(loss_val)
-            ep_acc  += _accuracy(Array(stats.logits), Array(y_d))
+            ep_acc  += _accuracy(Array(stats.logits), Array(data.label))
         end
 
         ep_elapsed = time() - ep_t0
@@ -134,6 +137,7 @@ function train_model(model, ps, st, train_dl, val_dl, cfg, dev_fn;
         # Best model checkpoint
         if run_val && val_loss < best_vl
             best_vl = val_loss
+            best_tl = Float32(avg_loss)   # train_loss at the same epoch — needed for HPO overfit penalty
             best_ep = ep
             best_ps = fmap(_snap, train_state.parameters)
             best_st = fmap(_snap, train_state.states)
@@ -159,6 +163,6 @@ function train_model(model, ps, st, train_dl, val_dl, cfg, dev_fn;
         @info "  Training log saved: $log_path"
     end
 
-    @info @sprintf("  Best epoch: %d  (val_loss=%.4f)", best_ep, best_vl)
-    return best_ps, best_st, best_ep, best_vl
+    @info @sprintf("  Best epoch: %d  (val_loss=%.4f, train_loss=%.4f)", best_ep, best_vl, best_tl)
+    return best_ps, best_st, best_ep, best_vl, best_tl
 end

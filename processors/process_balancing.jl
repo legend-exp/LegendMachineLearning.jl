@@ -14,12 +14,27 @@ function process_balancing(processing_config::PropDict, l200::LegendData, group_
     output_base = processing_config.paths.output.tier
     exclusion_rules = parse_exclusion_rules(get(bal_cfg, "ml_training_exclusion", []))
 
+    # ── Parse detector exclusions ────────────────────────────────────────
+    excl_ged_names  = String[String(x) for x in get(bal_cfg, "excluded_ged_detectors", String[])]
+    excl_sipm_names = String[String(x) for x in get(bal_cfg, "excluded_sipm_detectors", String[])]
+    excl_ged_ids    = resolve_excluded_ids(excl_ged_names)
+    excl_sipm_ids   = resolve_excluded_ids(excl_sipm_names)
+    !isempty(excl_ged_names)  && @info "Excluded HPGe:  $(join(excl_ged_names, ", "))"
+    !isempty(excl_sipm_names) && @info "Excluded SiPM:  $(join(excl_sipm_names, ", "))"
+
     # ── Read windowed PE from jlext ──────────────────────────────────────
     datasets = Dict{String, PreparedDataset}()
+    exclusion_stats = Dict{String, NamedTuple{(:n_events_dropped, :n_sipms_dropped),
+                                              Tuple{Int, Int}}}()
     for name in ["sub500keV", "forcedtrigger"]
         path = get_tier_path(output_base, "jlext", group_name, name)
         isfile(path) || (@error "jlext not found — run extraction first" dataset=name; return false)
         prep = _read_wpe_from_lh5(path); prep.name = name
+        n_sipms_dropped  = drop_sipm_columns!(prep, excl_sipm_ids)
+        n_events_dropped = apply_ged_exclusion!(prep, excl_ged_ids)
+        exclusion_stats[name] = (n_events_dropped=n_events_dropped, n_sipms_dropped=n_sipms_dropped)
+        (n_events_dropped > 0 || n_sipms_dropped > 0) &&
+            @info "  Exclusions applied" dataset=name events_dropped=n_events_dropped sipms_dropped=n_sipms_dropped
         datasets[name] = prep
         @info "  $name: $(prep.n_events) events"
     end
@@ -76,6 +91,11 @@ function process_balancing(processing_config::PropDict, l200::LegendData, group_
         path = get_tier_path(output_base, "jlext", group_name, ds_name)
         isfile(path) || (@warn "jlext not found for $ds_name — skipping"; continue)
         prep = _read_wpe_from_lh5(path); prep.name = ds_name
+        n_sipms_dropped  = drop_sipm_columns!(prep, excl_sipm_ids)
+        n_events_dropped = apply_ged_exclusion!(prep, excl_ged_ids)
+        exclusion_stats[ds_name] = (n_events_dropped=n_events_dropped, n_sipms_dropped=n_sipms_dropped)
+        (n_events_dropped > 0 || n_sipms_dropped > 0) &&
+            @info "  Exclusions applied" dataset=ds_name events_dropped=n_events_dropped sipms_dropped=n_sipms_dropped
         datasets[ds_name] = prep
         tbl = build_bal_table(prep, collect(1:prep.n_events), prep.ged_detector_id)
         _write_tier(tbl, "jlbal", ds_name, prep.sipm_detector_ids)
@@ -84,7 +104,10 @@ function process_balancing(processing_config::PropDict, l200::LegendData, group_
     # ── Report ───────────────────────────────────────────────────────────
     report_dir = get_report_dir(processing_config, group_name)
     generate_balancing_report(datasets, report_dir, group_name, exclusion_rules,
-                              n_sub_ml, length(ft_ml_idxs), n_ft_ml)
+                              n_sub_ml, length(ft_ml_idxs), n_ft_ml;
+                              excluded_ged_names=excl_ged_names,
+                              excluded_sipm_names=excl_sipm_names,
+                              exclusion_stats=exclusion_stats)
 
     @info "Balancing complete"
     return true

@@ -11,12 +11,16 @@ env_variables:
   JULIA_WORKER_TIMEOUT: "240"
   JULIA_CUDA_MEMORY_POOL: "none"
 
-# Dataset groups for ML training
+# Dataset groups for ML training.
+# Either set a single `active_group` (string), or `active_groups` (list) to
+# loop over multiple groups in one Julia session — sharing precompile cache.
+# CLI override: `julia main.jl ... --group mlgroup001,mlgroup002,mlgroup003`.
 datasets:
-  active_group: mlgroup001
+  active_group:  [mlgroup001,mlgroup002,mlgroup003,mlgroup004]   # mlgroup001 is the "baseline" for comparison; mlgroup002+003 are the "tuned" groups
+  # active_groups: [mlgroup001, mlgroup002, mlgroup003, mlgroup004]
 
 # Processors configuration
-# Order: geometry → extraction → balancing → normalization → training → prediction 
+# Order: geometry → extraction → balancing → normalization → hpo → training → prediction
 processors:
   process_geometry:
     enabled: false
@@ -25,9 +29,9 @@ processors:
 
   process_extraction:
     enabled: false
-    n_workers: 10 
-    threads_per_worker: 6
-    fk_batch_size: 40 
+    n_workers: 18              # one per (period, run) — matches 6 runs/group in ml_groupings
+    threads_per_worker: 4    # 6×11 + master ≈ 67 of 72 CPUs; ~33 GB heap hint per worker
+    fk_batch_size: 40
     rank: 2
     dependencies: []
 
@@ -44,9 +48,17 @@ processors:
       - process_balancing
       - process_geometry
 
+  process_hpo:
+    enabled: false              # opt-in: only run when explicitly enabled or via --only=process_hpo
+    rank: 5                     # before training, so its outputs can inform training params
+    dependencies:
+      - process_normalization
+    kwargs:
+      model: mlp_detector_concat
+
   process_training:
     enabled: false
-    rank: 5
+    rank: 6
     dependencies:
       - process_normalization
     kwargs:
@@ -54,9 +66,26 @@ processors:
 
   process_prediction:
     enabled: true
-    rank: 6
+    rank: 7
     dependencies:
       - process_training
     kwargs:
       model: mlp_detector_concat
       selection: 1
+
+  process_attribution:
+    enabled: false              # opt-in: invoke via --only=process_attribution
+    rank: 8                     # after prediction
+    dependencies:
+      - process_training
+    kwargs:
+      model: mlp_detector_concat
+      selection: 1
+      split: all                      # train + val + test concatenated
+      max_events_per_class: 10000000  # cap higher than dataset size → all events used
+      min_events_per_hpge: 100        # drop HPGe rows with < this many events in either class
+      n_steps: 32
+      batch_size: 1024                # GPU-friendly; CPU users may want 256
+      skip_completeness: false
+      warmup: true
+      seed: 1234

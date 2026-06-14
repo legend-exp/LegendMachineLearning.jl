@@ -98,3 +98,89 @@ function apply_exclusion(prep::PreparedDataset, rules)
     findall(keep)
 end
 export apply_exclusion
+
+# ============================================================================
+# Detector exclusions — drop by HPGe (events) or SiPM (columns)
+# ============================================================================
+
+_name_to_rawid(n::AbstractString) = UInt32(DetectorId(String(n)))
+_name_to_rawid(n::Symbol) = _name_to_rawid(String(n))
+
+"""
+    resolve_excluded_ids(names) → Vector{UInt32}
+
+Resolve a list of detector names (String/Symbol) to rawids via `DetectorId`.
+"""
+resolve_excluded_ids(names) = UInt32[_name_to_rawid(n) for n in names]
+export resolve_excluded_ids
+
+"""
+    apply_ged_exclusion!(prep::PreparedDataset, excl_ids::Vector{UInt32}) → n_dropped
+
+Drop all events from `prep` whose leading HPGe rawid is in `excl_ids`.
+Rebuilds all per-event fields in place (n_events, matrices, trigger VoV, etc.).
+Returns the number of dropped events.
+"""
+function apply_ged_exclusion!(prep::PreparedDataset, excl_ids::Vector{UInt32})
+    isempty(excl_ids) && return 0
+    excl_set = Set(excl_ids)
+    keep_idxs = findall(!in(excl_set), prep.ged_detector_id)
+    n_dropped = prep.n_events - length(keep_idxs)
+    n_dropped == 0 && return 0
+
+    prep.sipm_pe_sums          = prep.sipm_pe_sums[keep_idxs, :]
+    prep.sipm_pe_sums_prompt   = prep.sipm_pe_sums_prompt[keep_idxs, :]
+    prep.sipm_pe_sums_delayed  = prep.sipm_pe_sums_delayed[keep_idxs, :]
+    prep.event_sum_pe          = prep.event_sum_pe[keep_idxs]
+    prep.event_multiplicity    = prep.event_multiplicity[keep_idxs]
+    prep.event_sum_pe_prompt   = prep.event_sum_pe_prompt[keep_idxs]
+    prep.event_multiplicity_prompt  = prep.event_multiplicity_prompt[keep_idxs]
+    prep.event_sum_pe_delayed  = prep.event_sum_pe_delayed[keep_idxs]
+    prep.event_multiplicity_delayed = prep.event_multiplicity_delayed[keep_idxs]
+    prep.ged_detector_id       = prep.ged_detector_id[keep_idxs]
+    prep.ged_energy_keV        = prep.ged_energy_keV[keep_idxs]
+    prep.ged_t0_us             = prep.ged_t0_us[keep_idxs]
+    prep.trigger_det_ids       = prep.trigger_det_ids[keep_idxs]
+    prep.trigger_times_us      = prep.trigger_times_us[keep_idxs]
+    prep.trigger_pe_vals       = prep.trigger_pe_vals[keep_idxs]
+    prep.valid_indices         = collect(1:length(keep_idxs))
+    prep.n_events              = length(keep_idxs)
+    n_dropped
+end
+export apply_ged_exclusion!
+
+"""
+    drop_sipm_columns!(prep::PreparedDataset, excl_ids::Vector{UInt32}) → n_dropped
+
+Drop excluded SiPMs from `prep`: trims `sipm_detector_ids`, the three PE matrices,
+`per_det_raw_trig_pe`, and filters `trigger_det_ids`/`trigger_times_us`/`trigger_pe_vals`
+per-event to drop trigger entries pointing at excluded SiPMs.
+Returns the number of dropped SiPM columns.
+"""
+function drop_sipm_columns!(prep::PreparedDataset, excl_ids::Vector{UInt32})
+    isempty(excl_ids) && return 0
+    excl_set = Set(excl_ids)
+    keep_cols = findall(!in(excl_set), prep.sipm_detector_ids)
+    n_dropped = length(prep.sipm_detector_ids) - length(keep_cols)
+    n_dropped == 0 && return 0
+
+    prep.sipm_detector_ids     = prep.sipm_detector_ids[keep_cols]
+    prep.sipm_pe_sums          = prep.sipm_pe_sums[:, keep_cols]
+    prep.sipm_pe_sums_prompt   = prep.sipm_pe_sums_prompt[:, keep_cols]
+    prep.sipm_pe_sums_delayed  = prep.sipm_pe_sums_delayed[:, keep_cols]
+    prep.n_sipms               = length(keep_cols)
+    for id in excl_ids; haskey(prep.per_det_raw_trig_pe, id) && delete!(prep.per_det_raw_trig_pe, id); end
+
+    # Filter raw trigger VoV per-event
+    for i in 1:prep.n_events
+        dids = prep.trigger_det_ids[i]
+        any(in(excl_set), dids) || continue
+        mask = [!(d in excl_set) for d in dids]
+        prep.trigger_det_ids[i]  = dids[mask]
+        prep.trigger_times_us[i] = prep.trigger_times_us[i][mask]
+        prep.trigger_pe_vals[i]  = prep.trigger_pe_vals[i][mask]
+    end
+    n_dropped
+end
+export drop_sipm_columns!
+

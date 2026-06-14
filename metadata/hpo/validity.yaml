@@ -1,4 +1,4 @@
-# Validity mapping for prediction configs
+# Validity mapping for HPO search-space configs
 # Format: config_file: [list of groups that use this config]
 
 mlgroup001.yaml:
@@ -9,6 +9,3 @@ mlgroup003.yaml:
   - mlgroup003
 mlgroup004.yaml:
   - mlgroup004
-
-
-  
