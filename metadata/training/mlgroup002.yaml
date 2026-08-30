@@ -1,0 +1,160 @@
+mlp_detector_concat:
+  input:
+    sipm:
+      features:
+        - sipm_pe_sums_prompt_scaled
+        - sipm_pe_sums_delayed_scaled
+        - cos_proximity
+      layout: by_channel
+      ordering:
+        enabled: true
+        groups: [IB_top, IB_bottom, OB_top, OB_bottom]
+    hpge:
+      enabled: true
+      features: [scaled_angle, scaled_z_center]
+      output_dim: 16
+      hidden_width: 64
+      concat_after_layers: 0
+  architecture:
+    hidden_widths: [512, 256, 128, 64]
+    activation: tanh
+    dropout: 0.28              # raised from 0.23 — dampen mild overfit (train<val at end)
+    batch_norm: true
+  training:
+    epochs: 700                # raised from 500 — last run hit best at E499, no plateau
+    batch_size: 1024
+    learning_rate: 5e-4
+    weight_decay: 1e-3
+    optimizer: adamw
+    seed: 1234
+    early_stopping_patience: 50   # tightened from 100 — gives the longer run room to stop cleanly
+    lr_scheduler: cosine
+    lr_min: 1.0e-5
+    warmup_timeout: 300
+hierarchical_set:
+  input:
+    sipm:
+      ordering:
+        enabled: true
+        groups:
+        - IB_top
+        - IB_bottom
+        - OB_top
+        - OB_bottom
+      geometry:
+      - cos_proximity
+      - scaled_delta_z
+    triggers:
+      features:
+      - trig_time_scaled
+      - trig_pe_scaled
+      max_per_sipm: 16
+      pad_value: 0.0
+    hpge:
+      enabled: true
+      features:
+      - scaled_angle
+      - scaled_z_center
+      output_dim: 24
+      hidden_width: 64
+  architecture:
+    phi:
+      hidden_widths:
+      - 32
+      - 32
+      activation: gelu
+      dropout: 0.15
+      batch_norm: false
+    pooling:
+      ops:
+      - sum
+      - max
+    sipm_mlp:
+      hidden_widths:
+      - 48
+      activation: gelu
+      dropout: 0.2
+      batch_norm: false
+    event_pooling:
+      ops:
+      - mean
+      - max
+    tail:
+      hidden_widths:
+      - 128
+      - 64
+      activation: tanh
+      dropout: 0.35
+      batch_norm: true
+  training:
+    epochs: 100
+    batch_size: 4096
+    learning_rate: 8e-4
+    weight_decay: 5e-3
+    optimizer: adamw
+    seed: 1234
+    early_stopping_patience: 15
+    lr_scheduler: cosine
+    lr_min: !!float '1e-05'
+    warmup_timeout: 300
+    loss: bce
+set_transformer:
+  input:
+    sipm:
+      ordering:
+        enabled: true
+        groups:
+        - IB_top
+        - IB_bottom
+        - OB_top
+        - OB_bottom
+      geometry:
+      - cos_proximity
+      - scaled_delta_z
+    triggers:
+      features:
+      - trig_time_scaled
+      - trig_pe_scaled
+      max_per_sipm: 16
+      pad_value: 0.0
+    hpge:
+      enabled: true
+      features:
+      - scaled_angle
+      - scaled_z_center
+      output_dim: 24
+      hidden_width: 64
+  architecture:
+    embed:
+      out_dim: 64
+      activation: gelu
+      layer_norm: true
+    isab:
+      n_layers: 2
+      n_heads: 4
+      n_inducing: 16
+      ffn_hidden: 128
+      attention_dropout: 0.1
+    pma:
+      n_seeds: 1
+      n_heads: 4
+    tail:
+      hidden_widths:
+      - 128
+      - 64
+      activation: tanh
+      dropout: 0.3
+      batch_norm: true
+  training:
+    epochs: 100
+    batch_size: 1024
+    learning_rate: 0.00015
+    weight_decay: 5e-3
+    optimizer: adamw
+    seed: 1234
+    early_stopping_patience: 15
+    lr_scheduler: cosine
+    lr_min: !!float '1e-05'
+    warmup_timeout: 300
+    eval_every: 5
+    loss: bce

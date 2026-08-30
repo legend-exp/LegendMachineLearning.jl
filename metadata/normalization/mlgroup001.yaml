@@ -1,0 +1,61 @@
+# Normalization configuration for mlgroup001
+#
+# Reads jlbal/jlbalml (from balancing), applies scaling + geometry augmentation,
+# produces jlnorm (inference) and jlnormml (training: train/val/test split).
+
+# ============================================================================
+# Scaling — per-column pipeline applied in order
+# ============================================================================
+# Each key matches a VoV column in jlbal/jlbalml tables.
+# Steps are applied sequentially: clip → transform → normalize.
+# Global min/max for minmax is computed across both datasets per tier.
+
+scaling:
+  sipm_pe_sums:
+    - clip: [0, 20]
+    - transform: log1p
+    - normalize: {method: minmax, range: [0, 1], exclude_zero: false}
+  sipm_pe_sums_prompt:
+    - clip: [0, 20]
+    - transform: log1p
+    - normalize: {method: minmax, range: [0, 1], exclude_zero: false}
+  sipm_pe_sums_delayed:
+    - clip: [0, 20]
+    - transform: log1p
+    - normalize: {method: minmax, range: [0, 1], exclude_zero: false}
+
+# ============================================================================
+# Trigger-level scaling — per-trigger features for set-based models
+# ============================================================================
+# Applied to raw trigger VoV columns from jlbal/jlbalml.
+# PE scaling matches sipm_pe_sums (extraction already filters PE ≥ 0.6).
+# Time scaling maps the trigger window (±10 μs around t₀) linearly to [-1, 1].
+
+trigger_scaling:
+  pe:
+    - clip: [0, 15]
+    - transform: log1p
+    - normalize: {method: minmax, range: [0, 1]}
+  time:
+    range: [-1.5, 5]
+
+# ============================================================================
+# Geometry features — looked up from pre-computed geometry YAMLs
+# ============================================================================
+# relative: per (event × SiPM) from relative_geometry.yaml (HPGe↔SiPM pairs)
+# hpge:     per event from hpge_geometry.yaml (detector_position.scaled_*)
+# sipm:     per SiPM from sipm_geometry.yaml (reserved for future use)
+
+geometry_features:
+  relative: [cos_proximity, scaled_delta_z]
+  hpge: [scaled_angle, scaled_z_center]
+  sipm: []
+
+# ============================================================================
+# Train / Val / Test split ratios (jlnormml only)
+# ============================================================================
+
+split:
+  train: 0.7
+  test: 0.1
+  val: 0.2

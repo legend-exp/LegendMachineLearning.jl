@@ -1,0 +1,166 @@
+mlp_detector_concat:
+  input:
+    sipm:
+      features:
+        - sipm_pe_sums_full_scaled
+        - sipm_pe_sums_delayed_scaled
+        - cos_proximity
+      layout: by_channel
+      ordering:
+        enabled: true
+        groups: [IB_top, IB_bottom, OB_top, OB_bottom]
+    hpge:
+      enabled: true
+      features: [scaled_angle, scaled_z_center]
+      output_dim: 16
+      hidden_width: 64
+      concat_after_layers: 0
+  architecture:
+    hidden_widths: [512, 256, 128, 64]
+    activation: tanh
+    dropout: 0.28              # raised from 0.23 — dampen mild overfit (train<val at end)
+    batch_norm: true
+  training:
+    epochs: 700                # raised from 500 — last run hit best at E499, no plateau
+    batch_size: 1024
+    learning_rate: 5e-4
+    weight_decay: 1e-3
+    optimizer: adamw
+    seed: 1234
+    early_stopping_patience: 50   # tightened from 100 — gives the longer run room to stop cleanly
+    lr_scheduler: cosine
+    lr_min: 1.0e-5
+    warmup_timeout: 300
+
+hierarchical_set:
+  input:
+    sipm:
+      ordering:
+        enabled: true
+        groups:
+        - IB_top
+        - IB_bottom
+        - OB_top
+        - OB_bottom
+      geometry:
+      - cos_proximity
+      - scaled_delta_z
+    triggers:
+      features:
+      - trig_time_scaled
+      - trig_pe_scaled
+      max_per_sipm: 16
+      pad_value: 0.0
+    hpge:
+      enabled: true
+      features:
+      - scaled_angle
+      - scaled_z_center
+      output_dim: 16
+      hidden_width: 32
+  architecture:
+    phi:
+      hidden_widths:
+      - 16
+      - 16
+      activation: gelu
+      dropout: 0.2
+      batch_norm: false
+    pooling:
+      ops:
+      - sum
+      - max
+    sipm_mlp:
+      hidden_widths:
+      - 24
+      activation: gelu
+      dropout: 0.3
+      batch_norm: false
+    event_pooling:
+      ops:
+      - mean
+      - max
+    tail:
+      hidden_widths:
+      - 64
+      activation: tanh
+      dropout: 0.45
+      batch_norm: true
+  training:
+    epochs: 60
+    batch_size: 1024
+    learning_rate: 2e-4
+    weight_decay: 1e-2
+    optimizer: adamw
+    seed: 1234
+    early_stopping_patience: 8
+    lr_scheduler: cosine
+    lr_min: !!float '1e-06'
+    warmup_timeout: 300
+    loss: bce
+set_transformer:
+  input:
+    sipm:
+      ordering:
+        enabled: true
+        groups:
+        - IB_top
+        - IB_bottom
+        - OB_top
+        - OB_bottom
+      geometry:
+      - cos_proximity
+      - scaled_delta_z
+    triggers:
+      features:
+      - trig_time_scaled
+      - trig_pe_scaled
+      max_per_sipm: 16
+      pad_value: 0.0
+    hpge:
+      enabled: true
+      features:
+      - scaled_angle
+      - scaled_z_center
+      output_dim: 16
+      hidden_width: 32
+  architecture:
+    embed:
+      out_dim: 64
+      activation: gelu
+      layer_norm: true
+    isab:
+      n_layers: 2
+      n_heads: 4
+      n_inducing: 16
+      ffn_hidden: 128
+      attention_dropout: 0.25      # was 0.1 — early-epoch overfit, raise to regularize attention
+    pma:
+      n_seeds: 1
+      n_heads: 4
+    tail:
+      hidden_widths:
+      - 128
+      - 64
+      activation: tanh
+      dropout: 0.5                  # was 0.3 — biggest overfit lever (val_loss > train_loss by ~0.07)
+      batch_norm: true
+  training:
+    epochs: 60
+    # ATTN MEMORY: batch_size 1024 also OOMs (99.83% of 40 GB on A100). The
+    # Set-Transformer processes K·N=16·55=880 tokens per event through 2 ISAB
+    # layers, and Zygote stores all forward activations (~1.4 GB per fwd pass)
+    # plus per-attention-head softmax tensors of size (heads=4, M=16, K·N=880, B).
+    # If 512 also OOMs: drop M (n_inducing) 16→8 in `architecture.isab`, OR
+    # reduce K (max_per_sipm) 16→8 in `input.triggers` (cuts memory linearly).
+    batch_size: 512
+    learning_rate: 1.0e-4            # was 1.5e-4 — slightly slower, less wobble
+    weight_decay: 2.0e-2             # was 5e-3 — stronger L2 to fight observed overfit
+    optimizer: adamw
+    seed: 1234
+    early_stopping_patience: 8       # was 12 — eval_every:2 means 4 val checks before stopping
+    lr_scheduler: cosine
+    lr_min: !!float '1e-05'
+    warmup_timeout: 300
+    eval_every: 2                    # was 5 — finer-grained val tracking; only +1.5min/cycle
+    loss: bce
