@@ -1,15 +1,6 @@
 # This file is a part of LegendMachineLearning.jl, licensed under the MIT License (MIT).
 
 """
-    abstract type AbstractFeatureExtractor
-
-Maps an array of waveforms to a feature matrix with one row per waveform.
-Subtypes implement `features(fe, wvfs)`.
-"""
-abstract type AbstractFeatureExtractor end
-export AbstractFeatureExtractor
-
-"""
     HaarFeatures(; n_samples=256, normalize=true, bl_window=0.0u"µs"..25.0u"µs")
 
 Feature extractor: baseline subtraction (mean over `bl_window`), repeated
