@@ -52,5 +52,6 @@ step_wf(offset, amp; n=1024) = RDWaveform(range(0u"µs", step=0.016u"µs", lengt
     @testset "errors" begin
         wvfs = ArrayOfRDWaveforms([step_wf(100, 400)])
         @test_throws "empty" features(fe, wvfs[1:0])
+        @test_throws "same length" features(fe, ArrayOfRDWaveforms([step_wf(100, 400), step_wf(100, 400; n=512)]))
     end
 end
