@@ -31,9 +31,10 @@ export qc_categories
     class_fractions(labels, categories) -> Dict{Int,Float64}
 
 Fraction of each configured category among `labels`; categories that do
-not occur get 0. Throws on labels outside the table.
+not occur get 0. Throws on labels outside the table or an empty `labels`.
 """
 function class_fractions(labels::AbstractVector{<:Integer}, categories::Dict{Int,Symbol})
+    isempty(labels) && throw(ArgumentError("cannot compute class fractions of an empty label set"))
     counts = Dict{Int,Int}(k => 0 for k in keys(categories))
     for l in labels
         haskey(counts, l) || throw(ArgumentError("label $l is not a configured category"))

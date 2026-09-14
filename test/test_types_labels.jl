@@ -49,4 +49,5 @@ end
     f = class_fractions([0, 0, 1, 0], cats)
     @test f[0] == 0.75 && f[1] == 0.25
     @test_throws "not a configured category" class_fractions([0, 2], cats)
+    @test_throws "empty label set" class_fractions(Int[], cats)
 end
