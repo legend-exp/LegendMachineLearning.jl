@@ -11,6 +11,8 @@ using LinearAlgebra
 using Random
 using Statistics
 using StatsBase
+using Dates
+using SHA: sha256
 
 using Adapt: adapt
 using MLDataDevices: MLDataDevices
@@ -18,6 +20,36 @@ using Lux: Lux
 using ADTypes: ADTypes, AbstractADType
 import DifferentiationInterface as DI
 
-include("some_ml_model.jl")
+using Unitful
+using IntervalSets: ClosedInterval, leftendpoint, rightendpoint, (..)
+using ArraysOfArrays: flatview, VectorOfSimilarArrays
+using RadiationDetectorSignals: RDWaveform, ArrayOfRDWaveforms
+using RadiationDetectorDSP: signalstats, shift_waveform, multiply_waveform
+using LegendDSP: HaarAveragingFilter
+using Distances: SemiMetric, Cityblock, pairwise
+using CategoricalArrays: categorical, unwrap, levels
+using CategoricalDistributions: pdf
+using MLJBase: machine, fit!, predict, predict_mode, report, evaluate!, StratifiedCV,
+    serializable, restore!, fitted_params, partition
+using MLJModelInterface: table
+using MLJClusteringInterface: AffinityPropagation
+using MLJLIBSVMInterface: SVC, ProbabilisticSVC
+using StatisticalMeasures: balanced_accuracy
+using JLD2: jldsave, jldopen
+using PropDicts: PropDict
+using TypedTables: Table
+using StructArrays: StructArray
+using LegendDataManagement: LegendData, FileKey, DataPeriod, DataRun, DataCategory,
+    ChannelId, DetectorId, DataTier, runinfo, channelinfo, read_ldata, search_disk
+using LegendHDF5IO: lh5open
 
-end
+include("types.jl")
+include("features.jl")
+include("labels.jl")
+include("clustering.jl")
+include("training.jl")
+include("serialization.jl")
+include("sampling.jl")
+include("legend_io.jl")
+
+end # module
