@@ -63,6 +63,9 @@ end
             # a tampered model file is refused
             open(model_path, "a") do io; write(io, "x"); end
             @test_throws "SHA-256" load_qc_model(l200, fk)
+            # a validity-resolved entry without training_filekey is malformed, not absent
+            writelprops(l200.par.rpars.ml[fk.period], fk.run, PropDict(:svm => PropDict(:cost => 1.0)))
+            @test_throws "no training_filekey" load_qc_model(l200, fk)
         end
     end
 end

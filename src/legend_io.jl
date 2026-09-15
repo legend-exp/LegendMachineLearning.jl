@@ -66,7 +66,8 @@ export model_pars_entry
     load_qc_model(data, filekey) -> LegendMLModel or missing
 
 Model valid for `filekey`. `missing` when no `rpars.ml` validity entry
-covers it. Errors when the entry was trained in another period or the
+covers it. Errors when the resolved entry has no `training_filekey` (it was
+not written by the QC training step), was trained in another period, or the
 model file digest does not match the entry.
 """
 function load_qc_model(data::LegendData, filekey::FileKey)
@@ -75,7 +76,8 @@ function load_qc_model(data::LegendData, filekey::FileKey)
         @info "No QC ML parameter entry valid for $filekey"
         return missing
     end
-    haskey(pars, :training_filekey) || return missing
+    haskey(pars, :training_filekey) ||
+        throw(ArgumentError("rpars.ml entry valid for $filekey has no training_filekey; it was not written by the QC training step"))
     training_fk = FileKey(pars.training_filekey)
     training_fk.period == filekey.period ||
         throw(ArgumentError("QC model valid for $filekey was trained in $(training_fk.period), not $(filekey.period); train a model for this period"))
