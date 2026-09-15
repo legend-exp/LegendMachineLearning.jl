@@ -6,6 +6,7 @@ using LegendMachineLearning: HaarFeatures, features, haar_passes
 using RadiationDetectorSignals
 using Unitful
 using IntervalSets
+using OffsetArrays
 
 # 1024-sample step waveform with a baseline offset of 100 ADC and a step of +400 at sample 513
 step_wf(offset, amp; n=1024) = RDWaveform(range(0u"µs", step=0.016u"µs", length=n),
@@ -53,5 +54,10 @@ step_wf(offset, amp; n=1024) = RDWaveform(range(0u"µs", step=0.016u"µs", lengt
         wvfs = ArrayOfRDWaveforms([step_wf(100, 400)])
         @test_throws "empty" features(fe, wvfs[1:0])
         @test_throws "same length" features(fe, ArrayOfRDWaveforms([step_wf(100, 400), step_wf(100, 400; n=512)]))
+    end
+
+    @testset "OffsetArray input is refused" begin
+        wvfs = ArrayOfRDWaveforms([step_wf(100, 400), step_wf(-50, 800)])
+        @test_throws ArgumentError features(fe, OffsetArray(collect(wvfs), -1))
     end
 end

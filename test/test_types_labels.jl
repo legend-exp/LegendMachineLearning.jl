@@ -7,6 +7,7 @@ using LegendMachineLearning: WaveformSample, ClusterResult, propagate_labels, UN
 using RadiationDetectorSignals, Unitful
 using LegendDataManagement: FileKey, ChannelId, DetectorId
 using PropDicts
+using OffsetArrays
 
 flat_wf(n) = RDWaveform(range(0u"µs", step=0.016u"µs", length=n), zeros(n))
 
@@ -40,6 +41,8 @@ end
     @test propagate_labels(cluster, [0, 5, 7]) == [0, 5, 5, 7, 0]
     @test_throws "unlabeled" propagate_labels(cluster, [0, UNLABELED, 7])
     @test_throws DimensionMismatch propagate_labels(cluster, [0, 5])
+    # exemplar_labels with non-1-based axes cannot align with cluster.exemplars
+    @test_throws DimensionMismatch propagate_labels(cluster, OffsetArray([0, 5, 7], -1))
 end
 
 @testset "categories and fractions" begin

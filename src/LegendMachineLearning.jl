@@ -7,11 +7,11 @@ Machine learning algorithms for the LEGEND experiment.
 """
 module LegendMachineLearning
 
-using LinearAlgebra
-using Random
-using Statistics
-using StatsBase
-using Dates
+using LinearAlgebra: diagind
+using Random: Random, AbstractRNG, shuffle
+using Statistics: mean, quantile
+using StatsBase: sample
+using Dates: now
 using SHA: sha256
 
 using Adapt: adapt
@@ -20,14 +20,14 @@ using Lux: Lux
 using ADTypes: ADTypes, AbstractADType
 import DifferentiationInterface as DI
 
-using Unitful
+using Unitful: Unitful, @u_str
 using IntervalSets: ClosedInterval, leftendpoint, rightendpoint, (..)
 using ArraysOfArrays: flatview, VectorOfSimilarArrays
 using RadiationDetectorSignals: RDWaveform, ArrayOfRDWaveforms
 using RadiationDetectorDSP: signalstats, shift_waveform, multiply_waveform
 using LegendDSP: HaarAveragingFilter
 using Distances: SemiMetric, Cityblock, pairwise
-using CategoricalArrays: categorical, unwrap, levels
+using CategoricalArrays: categorical, unwrap
 using CategoricalDistributions: pdf
 using MLJBase: machine, fit!, predict, predict_mode, evaluate!, StratifiedCV,
     serializable, restore!, partition
@@ -38,8 +38,7 @@ using StatisticalMeasures: balanced_accuracy
 using JLD2: jldsave, jldopen
 using PropDicts: PropDict
 using TypedTables: Table
-using StructArrays: StructArray
-using LegendDataManagement: LegendDataManagement, LegendData, FileKey, DataPeriod, DataRun, DataCategory,
+using LegendDataManagement: LegendDataManagement, LegendData, FileKey, DataPeriod, DataCategory,
     ChannelId, DetectorId, DataTier, runinfo, channelinfo, read_ldata, search_disk
 using LegendHDF5IO: lh5open
 

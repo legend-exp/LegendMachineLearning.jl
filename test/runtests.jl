@@ -5,6 +5,7 @@ import LegendMachineLearning
 
 Test.@testset "Package LegendMachineLearning" begin
     include("test_aqua.jl")
+    include("test_explicit_imports.jl")
     include("test_features.jl")
     include("test_types_labels.jl")
     include("test_clustering.jl")
