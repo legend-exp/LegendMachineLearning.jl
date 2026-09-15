@@ -27,6 +27,7 @@ end
         fill(ChannelId(1121600), n), fill(DetectorId(:V00048B), n), fill(:icpc, n), fill(1000.0, n))
     c = ClusterResult((damp=0.5, preference=-1.0, preference_quantile=0.05, maxiter=10, tol=1e-6, metric="Cityblock"),
         vcat(fill(1, 40), fill(2, 40)), [1, 41], true, 5)
+    training_fk = FileKey("l200-p03-r002-cal-20230501T000000Z")
     cfg = PropDict(
         :features => PropDict(:n_samples => 8, :normalize => false, :bl_window => [0.0, 0.05]),
         :svm => PropDict(:cost => PropDict(:min => 0.1, :max => 10.0, :n => 2),
@@ -38,16 +39,20 @@ end
         pars = PropDict(:sample => PropDict(:sample_sha256 => file_sha256(sample_path)),
             :affinity_propagation => LegendMachineLearning.cluster_result_to_props(c),
             :exemplar_labels => [0, 4])
-        model, entry, rep = LegendMachineLearning._train_from_sample_file(sample_path, cfg, pars; rng)
+        model, entry, rep = LegendMachineLearning._train_from_sample_file(sample_path, training_fk, cfg, pars; rng)
         @test isfile(qc_model_filename(sample_path))
         @test entry.model_sha256 == file_sha256(qc_model_filename(sample_path))
         @test model(s.waveform[[1, 41]]) == [0, 4]
         @test rep.classes == [0, 4]
+        # the model is named after the passed-in training filekey, not the
+        # filekey of the sample rows (s.filekey is a different run)
+        @test entry.training_filekey == string(training_fk)
+        @test model.metadata.training_filekey == string(training_fk)
         # unlabeled exemplar is refused
         pars_bad = merge(pars, PropDict(:exemplar_labels => [0, UNLABELED]))
-        @test_throws "unlabeled" LegendMachineLearning._train_from_sample_file(sample_path, cfg, pars_bad; rng)
+        @test_throws "unlabeled" LegendMachineLearning._train_from_sample_file(sample_path, training_fk, cfg, pars_bad; rng)
         # stale sample is refused
         pars_stale = merge(pars, PropDict(:sample => PropDict(:sample_sha256 => "0"^64)))
-        @test_throws "sample file changed" LegendMachineLearning._train_from_sample_file(sample_path, cfg, pars_stale; rng)
+        @test_throws "sample file changed" LegendMachineLearning._train_from_sample_file(sample_path, training_fk, cfg, pars_stale; rng)
     end
 end

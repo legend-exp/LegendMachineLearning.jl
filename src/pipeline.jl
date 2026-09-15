@@ -47,7 +47,8 @@ function run_qc_sampling(data::LegendData, training_fk::FileKey, config::PropDic
 end
 export run_qc_sampling
 
-function _train_from_sample_file(sample_path::AbstractString, config::PropDict, pars::PropDict; rng::AbstractRNG=Random.default_rng())
+function _train_from_sample_file(sample_path::AbstractString, training_fk::FileKey, config::PropDict, pars::PropDict;
+        rng::AbstractRNG=Random.default_rng())
     digest = file_sha256(sample_path)
     digest == pars.sample.sample_sha256 ||
         throw(ArgumentError("sample file changed since it was labeled (SHA-256 $digest vs $(pars.sample.sample_sha256)); rebuild the sample and relabel"))
@@ -61,7 +62,6 @@ function _train_from_sample_file(sample_path::AbstractString, config::PropDict, 
     fe = features_config(config)
     X = features(fe, sample.waveform)
     mach, rep = train_svm(X, labels, config.svm; groups=sample.det_type, rng)
-    training_fk = first(sample.filekey)
     metadata = PropDict(:training_filekey => string(training_fk), :period => string(training_fk.period),
         :category => string(training_fk.category), :n_sample => length(sample),
         :detectors => string.(unique(sample.detector)), :labels => labels,
@@ -77,8 +77,9 @@ end
     run_qc_training(data, training_fk, config, pars; rng) -> (model, pars_entry, report)
 
 Train the SVM from the labeled sample of `training_fk`, write the JLD2 model
-file and return the parameter entry to store under `rpars.ml`.
+file and return the parameter entry to store under `rpars.ml`. `training_fk`
+names the model, independent of which sample rows happened to be drawn.
 """
 run_qc_training(data::LegendData, training_fk::FileKey, config::PropDict, pars::PropDict; rng::AbstractRNG=Random.default_rng()) =
-    _train_from_sample_file(qc_sample_filename(data, training_fk), config, pars; rng)
+    _train_from_sample_file(qc_sample_filename(data, training_fk), training_fk, config, pars; rng)
 export run_qc_training
