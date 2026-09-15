@@ -12,6 +12,7 @@ Test.@testset "Package LegendMachineLearning" begin
     include("test_serialization.jl")
     include("test_sampling.jl")
     include("test_legend_io.jl")
+    include("test_pipeline.jl")
     include("test_docs.jl")
     Test.@test isempty(Test.detect_ambiguities(LegendMachineLearning))
 end

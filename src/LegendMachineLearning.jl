@@ -51,5 +51,6 @@ include("training.jl")
 include("serialization.jl")
 include("sampling.jl")
 include("legend_io.jl")
+include("pipeline.jl")
 
 end # module
