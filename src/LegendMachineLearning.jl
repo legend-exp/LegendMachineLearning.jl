@@ -39,7 +39,7 @@ using JLD2: jldsave, jldopen
 using PropDicts: PropDict
 using TypedTables: Table
 using StructArrays: StructArray
-using LegendDataManagement: LegendData, FileKey, DataPeriod, DataRun, DataCategory,
+using LegendDataManagement: LegendDataManagement, LegendData, FileKey, DataPeriod, DataRun, DataCategory,
     ChannelId, DetectorId, DataTier, runinfo, channelinfo, read_ldata, search_disk
 using LegendHDF5IO: lh5open
 
