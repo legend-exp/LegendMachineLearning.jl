@@ -12,6 +12,9 @@ function features_config(config::PropDict)
 end
 export features_config
 
+"YAML/PropDict cannot serialize a Matrix; the scan grid goes in as one vector per row."
+_grid_rows(m::AbstractMatrix) = [collect(r) for r in eachrow(m)]
+
 """
     run_qc_sampling(data, training_fk, config; rng, kwargs...) -> (sample, cluster, pars, scan)
 
@@ -40,8 +43,8 @@ function run_qc_sampling(data::LegendData, training_fk::FileKey, config::PropDic
         :zero_energy_fraction => Float64(config.strata.zero_energy_fraction), :sample_sha256 => file_sha256(path))
     pars.affinity_propagation = cluster_result_to_props(cluster)
     pars.affinity_propagation.scan = PropDict(:damp => scan.damp, :preference_quantile => scan.preference_quantile,
-        :preference => scan.preference, :n_clusters => scan.n_clusters, :converged => scan.converged,
-        :iterations => scan.iterations)
+        :preference => scan.preference, :n_clusters => _grid_rows(scan.n_clusters), :converged => _grid_rows(scan.converged),
+        :iterations => _grid_rows(scan.iterations))
     pars.exemplar_labels = fill(UNLABELED, length(cluster.exemplars))
     sample, cluster, pars, scan
 end

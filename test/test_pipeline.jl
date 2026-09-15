@@ -6,12 +6,30 @@ using LegendMachineLearning: features_config, run_qc_sampling, run_qc_training, 
     file_sha256, qc_model_filename, write_sample, read_sample
 using PropDicts, StableRNGs, Unitful, IntervalSets
 using RadiationDetectorSignals
-using LegendDataManagement: FileKey, ChannelId, DetectorId
+using LegendDataManagement: FileKey, ChannelId, DetectorId, writelprops, readlprops
 
 @testset "features_config" begin
     fe = features_config(PropDict(:features => PropDict(:n_samples => 128, :normalize => false, :bl_window => [0.0, 10.0])))
     @test fe.n_samples == 128 && fe.normalize == false
     @test fe.bl_window == 0.0u"µs"..10.0u"µs"
+end
+
+@testset "scan grid is YAML-serializable" begin
+    # The same shape `run_qc_sampling` writes to `pars.affinity_propagation.scan`.
+    scan = (damp=[0.5, 0.9], preference_quantile=[0.05, 0.5], preference=[-1.0, -2.0],
+        n_clusters=[3 4; 5 6], converged=[true false; true true], iterations=[10 20; 30 40])
+    pd = PropDict(:damp => scan.damp, :preference_quantile => scan.preference_quantile,
+        :preference => scan.preference, :n_clusters => LegendMachineLearning._grid_rows(scan.n_clusters),
+        :converged => LegendMachineLearning._grid_rows(scan.converged),
+        :iterations => LegendMachineLearning._grid_rows(scan.iterations))
+    mktempdir() do dir
+        path = joinpath(dir, "scan.yaml")
+        writelprops(path, pd)
+        back = readlprops(path)
+        @test [collect(r) for r in eachrow(scan.n_clusters)] == back.n_clusters
+        @test [collect(r) for r in eachrow(scan.converged)] == back.converged
+        @test [collect(r) for r in eachrow(scan.iterations)] == back.iterations
+    end
 end
 
 # The sampling/training entry points touch LegendData file paths that the test
