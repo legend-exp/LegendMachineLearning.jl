@@ -6,6 +6,8 @@ using LegendMachineLearning: select_indices, training_filekey, build_sample
 using StableRNGs, PropDicts
 using LegendTestData
 using LegendDataManagement
+using TypedTables
+using RadiationDetectorSignals: ArrayOfRDWaveforms
 
 @testset "select_indices" begin
     rng = StableRNG(11)
@@ -24,19 +26,38 @@ using LegendDataManagement
 end
 
 @testset "build_sample on LegendTestData" begin
-    activate_legend_test_data_config()
+    # Point straight at the raw-tier test data, as LegendDataManagement's own
+    # test suite does; `activate_legend_test_data_config()` targets a config
+    # file without the `setups` wrapper `LegendDataConfig` requires, and the
+    # p03 raw files use the old `chXXXX/raw` group layout that current
+    # `read_ldata` cannot read. The p18 raw files have detector-named groups
+    # but their detectors are absent from the test-data channel maps, so
+    # `chinfo` is supplied by hand rather than via `channelinfo`.
+    ENV["LEGEND_DATA_CONFIG"] = joinpath(legend_test_data_path(), "data", "lh5", "prod-ref-l200", "config.json")
     l200 = LegendData(:l200)
-    period, category = DataPeriod(3), DataCategory(:cal)
-    fk = training_filekey(l200, period, category)
-    @test fk.period == period && fk.category == category
+    raw_filekeys = search_disk(FileKey, l200.tier[DataTier(:raw), :cal, DataPeriod(18), DataRun(0)])
+    fk = first(raw_filekeys)
+    chinfo = Table(detector=[DetectorId(:V97061A)], channel=[ChannelId(1104000)], det_type=[:icpc])
     cfg = PropDict(
-        :detectors => ["V01240A"],   # channel ch1084804 in the p03 channel map (see Step 3)
-        :n_max => 40, :n_files_max => 1, :waveform_column => :waveform,
+        :detectors => ["V97061A"],
+        :n_max => 12, :n_files_max => 2, :waveform_column => :waveform_presummed,
         :strata => PropDict(:zero_energy_fraction => 0.1))
-    s = build_sample(l200, fk, cfg; rng=StableRNG(5))
-    @test length(s) == 40
-    @test all(==(fk.period), getproperty.(s.filekey, :period))
+
+    s = build_sample(l200, fk, cfg; rng=StableRNG(5), chinfo)
+    @test length(s) == 12
     @test allunique(zip(s.filekey, s.eventnumber))
-    @test all(s.det_type .== s.det_type[1])
-    @test_throws "not found" build_sample(l200, fk, merge(cfg, PropDict(:detectors => ["V00000X"])); rng=StableRNG(5))
+    @test all(in(raw_filekeys), s.filekey)
+    @test all(==(:icpc), s.det_type)
+    @test all(==(DetectorId(:V97061A)), s.detector)
+    @test s.waveform isa ArrayOfRDWaveforms
+
+    cfg1 = merge(cfg, PropDict(:n_files_max => 1))
+    s1 = build_sample(l200, fk, cfg1; rng=StableRNG(5), chinfo)
+    @test length(s1) <= 10
+    @test length(unique(s1.filekey)) == 1
+
+    # "V00000A" parses as a syntactically valid detector id (unlike "V00000X",
+    # whose suffix letter the HPGe id regex rejects before `build_sample`'s
+    # own "not found" check ever runs) but names no detector in `chinfo`.
+    @test_throws "not found" build_sample(l200, fk, merge(cfg, PropDict(:detectors => ["V00000A"])); rng=StableRNG(5), chinfo)
 end
