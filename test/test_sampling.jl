@@ -64,9 +64,16 @@ end
         @test raw.waveform_presummed[j].signal == s.waveform[i].signal
     end
 
+    # with both raw files available, the run-wide quota of 12 is still met
+    cfg2 = merge(cfg, PropDict(:n_files_max => 2))
+    s2 = build_sample(l200, fk, cfg2; rng=StableRNG(5), chinfo)
+    @test length(s2) == 12
+
+    # restricted to the first raw file (10 rows), the candidate pool falls
+    # short of the quota of 12: all 10 rows are returned, with a warning
     cfg1 = merge(cfg, PropDict(:n_files_max => 1))
-    s1 = build_sample(l200, fk, cfg1; rng=StableRNG(5), chinfo)
-    @test length(s1) <= 10
+    s1 = @test_logs (:warn, r"only 10 rows") match_mode=:any build_sample(l200, fk, cfg1; rng=StableRNG(5), chinfo)
+    @test length(s1) == 10
     @test length(unique(s1.filekey)) == 1
 
     # "V00000A" parses as a syntactically valid detector id (unlike "V00000X",
