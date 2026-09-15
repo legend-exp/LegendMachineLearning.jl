@@ -74,5 +74,7 @@ end
     @testset "errors" begin
         @test_throws DimensionMismatch train_svm(X, y[1:5], svm_cfg())
         @test_throws "at least two classes" train_svm(X, fill(0, 80), svm_cfg())
+        rare_groups = vcat(fill(:a, 79), [:rare])
+        @test_throws "no rows in the holdout split" train_svm(X, y, svm_cfg(); groups=rare_groups, rng=StableRNG(1))
     end
 end

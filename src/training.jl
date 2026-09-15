@@ -28,8 +28,6 @@ export class_weights
 
 _svm_model(cfg::PropDict, cost, gamma) = (cfg.probability ? ProbabilisticSVC : SVC)(; cost=Float64(cost), gamma=Float64(gamma))
 
-const _svm_lock = ReentrantLock()
-
 # MLJBase's generic `predict_mode` fallback is `mode.(predict(...))`, which assumes
 # probabilistic predictions; a deterministic SVC's `predict` already returns labels.
 _predict_mode(mach, Xt) = mach.model isa ProbabilisticSVC ? predict_mode(mach, Xt) : predict(mach, Xt)
@@ -68,17 +66,12 @@ function train_svm(X::AbstractMatrix{<:Real}, y::AbstractVector{<:Integer}, svm_
     n_folds = Int(svm_config.n_folds)
     cv_score = zeros(Float64, length(costs), length(gammas))
     grid = [(i, j) for i in eachindex(costs) for j in eachindex(gammas)]
-    seeds = rand(rng, UInt, length(grid))
-    # LIBSVM's C library is not safe against concurrent training calls from
-    # multiple Julia threads (observed as random memory corruption); serialize
-    # the actual fit/evaluate call while keeping the grid search parallelized.
-    Threads.@threads for g in eachindex(grid)
+    # LIBSVM training is not safe to call concurrently, so the grid runs sequentially.
+    for g in eachindex(grid)
         i, j = grid[g]
         mach = machine(_svm_model(svm_config, costs[i], gammas[j]), Xt, yc, w)
-        e = lock(_svm_lock) do
-            evaluate!(mach; resampling=StratifiedCV(nfolds=n_folds, shuffle=true, rng=Xoshiro(seeds[g])),
-                measure=balanced_accuracy, operation=(svm_config.probability ? predict_mode : predict), verbosity=0)
-        end
+        e = evaluate!(mach; resampling=StratifiedCV(; nfolds=n_folds, shuffle=true, rng),
+            measure=balanced_accuracy, operation=(svm_config.probability ? predict_mode : predict), verbosity=0)
         cv_score[i, j] = only(e.measurement)
     end
     best_ij = argmax(cv_score)
@@ -96,6 +89,10 @@ function train_svm(X::AbstractMatrix{<:Real}, y::AbstractVector{<:Integer}, svm_
     class_accuracy = [confusion[i, i] / max(sum(confusion[i, :]), 1) for i in eachindex(classes)]
     group_names = sort(unique(Symbol.(groups)))
     g_test = Symbol.(groups[test_idx])
+    for g in group_names
+        any(==(g), g_test) ||
+            throw(ArgumentError("group $g has no rows in the holdout split; enlarge the sample or drop the group"))
+    end
     group_accuracy = [mean(y_pred[g_test .== g] .== y_test[g_test .== g]) for g in group_names]
 
     mach = machine(_svm_model(svm_config, best.cost, best.gamma), Xt, yc, w)
@@ -124,10 +121,10 @@ function predict_with_margin(m::LegendMLModel, X::AbstractMatrix)
     m.machine.model isa ProbabilisticSVC ||
         throw(ArgumentError("margins need a probabilistic model; this model is $(typeof(m.machine.model))"))
     p = predict(m.machine, table(X))
-    classes = sort(collect(keys(m.categories)))
-    P = pdf(p, classes)
-    labels = Int.(unwrap.(_predict_mode(m.machine, table(X))))
-    labels, vec(maximum(P; dims=2))
+    modes = predict_mode(m.machine, table(X))
+    labels = Int.(unwrap.(modes))
+    margin = Float64.(pdf.(p, modes))
+    labels, margin
 end
 predict_with_margin(m::LegendMLModel, wvfs::AbstractVector{<:RDWaveform}) = predict_with_margin(m, features(m.features, wvfs))
 export predict_with_margin
