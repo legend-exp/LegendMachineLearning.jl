@@ -23,6 +23,11 @@ using RadiationDetectorSignals: ArrayOfRDWaveforms
     # request more than available
     @test select_indices(e2, 500; zero_energy_fraction=0.2, rng) == 1:100
     @test_throws "between 0 and 1" select_indices(e2, 5; zero_energy_fraction=1.5, rng)
+    # fewer non-zero events than the remainder: the zero stratum tops up
+    e3 = vcat(zeros(30), rand(rng, 100.0:5000.0, 5))
+    idx3 = select_indices(e3, 20; zero_energy_fraction=0.1, rng)
+    @test length(idx3) == 20
+    @test count(iszero, e3[idx3]) == 15
 end
 
 @testset "build_sample on LegendTestData" begin
@@ -51,6 +56,14 @@ end
     @test all(==(DetectorId(:V97061A)), s.detector)
     @test s.waveform isa ArrayOfRDWaveforms
 
+    # Every sampled row traces back to the exact raw event it was read from.
+    for i in 1:length(s)
+        raw = read_ldata((:daqenergy, :eventnumber, :waveform_presummed), l200, DataTier(:raw), s.filekey[i], DetectorId(:V97061A))
+        j = only(findall(==(s.eventnumber[i]), raw.eventnumber))
+        @test raw.daqenergy[j] == s.daqenergy[i]
+        @test raw.waveform_presummed[j].signal == s.waveform[i].signal
+    end
+
     cfg1 = merge(cfg, PropDict(:n_files_max => 1))
     s1 = build_sample(l200, fk, cfg1; rng=StableRNG(5), chinfo)
     @test length(s1) <= 10
@@ -60,4 +73,6 @@ end
     # whose suffix letter the HPGe id regex rejects before `build_sample`'s
     # own "not found" check ever runs) but names no detector in `chinfo`.
     @test_throws "not found" build_sample(l200, fk, merge(cfg, PropDict(:detectors => ["V00000A"])); rng=StableRNG(5), chinfo)
+    @test_throws "is empty" build_sample(l200, fk, merge(cfg, PropDict(:detectors => String[])); rng=StableRNG(5), chinfo)
+    @test_throws "no raw files" build_sample(l200, FileKey("l200-p18-r099-cal-20251107T191821Z"), cfg; rng=StableRNG(5), chinfo)
 end

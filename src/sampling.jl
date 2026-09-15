@@ -3,10 +3,13 @@
 """
     select_indices(daqenergy, n; zero_energy_fraction, rng) -> Vector{Int}
 
-Sorted row indices: up to `zero_energy_fraction * n` rows with `daqenergy == 0`
-(events whose energy the DAQ could not reconstruct), the remainder drawn
-uniformly without replacement from the other rows. Returns every row when
-`n ≥ length(daqenergy)`.
+Sorted row indices, `length(sel) == min(n, length(daqenergy))`. Reserves
+`zero_energy_fraction * n` of them for rows with `daqenergy == 0` (events
+whose energy the DAQ could not reconstruct) and draws the rest uniformly
+without replacement from the other rows; that fraction is only a minimum
+when both strata are large enough to supply their share; a stratum too
+small for its share is capped at what it has, and the other stratum tops
+up to make `n` (or all of `daqenergy`, whichever is smaller).
 """
 function select_indices(daqenergy::AbstractVector{<:Real}, n::Integer;
         zero_energy_fraction::Real, rng::AbstractRNG=Random.default_rng())
@@ -18,6 +21,7 @@ function select_indices(daqenergy::AbstractVector{<:Real}, n::Integer;
     other_idx = filter(i -> !iszero(daqenergy[i]), idx_all)
     n_zero = min(round(Int, zero_energy_fraction * n), length(zero_idx))
     n_other = min(n - n_zero, length(other_idx))
+    n_zero = min(n - n_other, length(zero_idx))
     sel = vcat(shuffle(rng, zero_idx)[1:n_zero], shuffle(rng, other_idx)[1:n_other])
     sort!(sel)
 end
@@ -37,17 +41,7 @@ function training_filekey(data::LegendData, period::DataPeriod, category::DataCa
 end
 export training_filekey
 
-# `read_ldata` resolves the raw tier from the bare Symbol `:raw` for most
-# selector combinations, but not all; retry with `DataTier(:raw)` when the
-# Symbol form has no matching method.
-function _read_raw(f, data::LegendData, sel...)
-    try
-        read_ldata(f, data, :raw, sel...)
-    catch e
-        (e isa MethodError || e isa ArgumentError) || rethrow()
-        read_ldata(f, data, DataTier(:raw), sel...)
-    end
-end
+_read_raw(f, data::LegendData, sel...) = read_ldata(f, data, DataTier(:raw), sel...)
 
 function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, row,
         n_det::Integer, n_files_max::Integer, zero_energy_fraction::Real, waveform_column::Symbol, rng)
@@ -61,11 +55,12 @@ function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, r
     nrows = length(daqenergy)
     nrows > 0 || throw(ArgumentError("no raw events for $det in $(length(filekeys)) files"))
     sel = select_indices(daqenergy, n_det; zero_energy_fraction, rng)
+    sel_set = Set(sel)
     parts = WaveformSample[]
     for fk in unique(file_of_row[sel])
         length(parts) < n_files_max || break
         rows_fk = findall(==(fk), file_of_row)
-        local_sel = findall(in(Set(sel)), rows_fk)      # positions within this file
+        local_sel = findall(in(sel_set), rows_fk)      # positions within this file
         wv = _read_raw((waveform_column,), data, fk, det)
         wvfs = getproperty(wv, waveform_column)[local_sel]
         n = length(local_sel)
@@ -87,14 +82,18 @@ at most `config.n_files_max` raw files per detector.
 look up each entry of `config.detectors`; it defaults to the full channel
 map of `filekey`. Pass any other table with those three columns to run
 without a channel map, e.g. a hand-built `TypedTables.Table` against raw
-files that predate or lack channel-map coverage.
+files that predate or lack channel-map coverage. Rows selected from files
+beyond `config.n_files_max` are dropped, so a detector can contribute
+fewer than its share of `config.n_max`.
 """
 function build_sample(data::LegendData, filekey::FileKey, config::PropDict;
         rng::AbstractRNG=Random.default_rng(), chinfo=channelinfo(data, filekey; system=:geds))
     detectors = DetectorId.(config.detectors)
     isempty(detectors) && throw(ArgumentError("config.detectors is empty"))
     n_det = cld(Int(config.n_max), length(detectors))
-    filekeys = search_disk(FileKey, data.tier[DataTier(:raw), filekey.category, filekey.period, filekey.run])
+    dir = data.tier[DataTier(:raw), filekey.category, filekey.period, filekey.run]
+    isdir(dir) || throw(ArgumentError("no raw files for $(filekey.period) $(filekey.run) $(filekey.category)"))
+    filekeys = search_disk(FileKey, dir)
     isempty(filekeys) && throw(ArgumentError("no raw files for $(filekey.period) $(filekey.run) $(filekey.category)"))
     rows = map(detectors) do det
         i = findfirst(==(det), chinfo.detector)
