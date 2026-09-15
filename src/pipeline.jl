@@ -28,9 +28,9 @@ function run_qc_sampling(data::LegendData, training_fk::FileKey, config::PropDic
     damp = collect(range(Float64(ap.damp.min), Float64(ap.damp.max), length=Int(ap.damp.n)))
     pq = collect(range(Float64(ap.preference_quantile.min), Float64(ap.preference_quantile.max), length=Int(ap.preference_quantile.n)))
     scan = scan_affinity_propagation(X; damp, preference_quantile=pq, target_n_clusters=Int(ap.target_n_clusters),
-        maxiter=Int(ap.maxiter), tol=Float64(ap.tol))
+        maxiter=Int(ap.maxiter), tol=Float64(ap.tol), rng)
     cluster = fit_affinity_propagation(X; damp=scan.best.damp, preference=scan.best.preference,
-        preference_quantile=pq[scan.best.i_preference], maxiter=Int(ap.maxiter), tol=Float64(ap.tol))
+        preference_quantile=pq[scan.best.i_preference], maxiter=Int(ap.maxiter), tol=Float64(ap.tol), S=scan.S)
     path = qc_sample_filename(data, training_fk)
     mkpath(dirname(path))
     write_sample(path, sample, cluster)

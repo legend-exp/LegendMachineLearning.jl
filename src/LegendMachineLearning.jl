@@ -29,10 +29,10 @@ using LegendDSP: HaarAveragingFilter
 using Distances: SemiMetric, Cityblock, pairwise
 using CategoricalArrays: categorical, unwrap, levels
 using CategoricalDistributions: pdf
-using MLJBase: machine, fit!, predict, predict_mode, report, evaluate!, StratifiedCV,
-    serializable, restore!, fitted_params, partition
+using MLJBase: machine, fit!, predict, predict_mode, evaluate!, StratifiedCV,
+    serializable, restore!, partition
 using MLJModelInterface: table
-using MLJClusteringInterface: AffinityPropagation
+using Clustering: Clustering
 using MLJLIBSVMInterface: SVC, ProbabilisticSVC
 using StatisticalMeasures: balanced_accuracy
 using JLD2: jldsave, jldopen

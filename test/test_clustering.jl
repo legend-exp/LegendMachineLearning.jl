@@ -34,6 +34,7 @@ end
         @test r.converged[r.best.i_preference, r.best.i_damp]
         @test r.best.damp in r.damp
         @test r.best.preference in r.preference
+        @test size(r.S) == (90, 90)
     end
 
     @testset "fit" begin
@@ -49,10 +50,28 @@ end
         # cluster assignment matches the ground truth up to relabeling
         @test length(unique(zip(c.assignment, truth))) == 3
         @test c.hyperparameters.damp == r.best.damp
+
+        # reusing the scan's shared similarity matrix gives the same fit
+        c_shared = fit_affinity_propagation(X; damp=r.best.damp, preference=r.best.preference, maxiter=500, S=r.S)
+        @test c_shared.assignment == c.assignment
+        @test c_shared.exemplars == c.exemplars
     end
 
     @testset "no converged grid point" begin
         @test_throws "no grid point converged" scan_affinity_propagation(X; damp=[0.5],
             preference_quantile=[0.5], target_n_clusters=3, maxiter=1)
+        # Clustering.jl's `@show A R` dump before its zero-exemplar assertion must
+        # not reach stdout.
+        mktemp() do path, io
+            redirect_stdout(io) do
+                try
+                    scan_affinity_propagation(X; damp=[0.5], preference_quantile=[0.5], target_n_clusters=3, maxiter=1)
+                catch e
+                    e isa ArgumentError || rethrow()
+                end
+            end
+            flush(io)
+            @test isempty(read(path, String))
+        end
     end
 end
