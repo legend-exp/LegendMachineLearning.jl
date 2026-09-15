@@ -3,7 +3,7 @@
 using Test
 using LegendMachineLearning
 using LegendMachineLearning: qc_model_filename, model_pars_entry, load_qc_model, qc_sample_filename,
-    train_svm, save_model, HaarFeatures
+    qc_ml_pars, train_svm, save_model, HaarFeatures
 using LegendTestData, LegendDataManagement, PropDicts, StableRNGs, Unitful, IntervalSets
 using LegendDataManagement: writelprops
 using LegendDataManagement.LDMUtils: writevalidity
@@ -66,6 +66,27 @@ end
             # a validity-resolved entry without training_filekey is malformed, not absent
             writelprops(l200.par.rpars.ml[fk.period], fk.run, PropDict(:svm => PropDict(:cost => 1.0)))
             @test_throws "no training_filekey" load_qc_model(l200, fk)
+        end
+    end
+end
+
+@testset "qc_ml_pars rethrows a non-absence error" begin
+    mktempdir() do dir
+        cfg_path = joinpath(dir, "config.json")
+        write(cfg_path, """{"setups": {"l200": {"paths": {"tier": "$(joinpath(dir, "tier"))", "par": "$(joinpath(dir, "par"))", "metadata": "$(joinpath(dir, "metadata"))"}}}}""")
+        mkpath(joinpath(dir, "par"))
+        withenv("LEGEND_DATA_CONFIG" => cfg_path) do
+            l200 = LegendData(:l200)
+            fk = FileKey("l200-p18-r000-cal-20251107T191821Z")
+            # `writevalidity` records p18/r000.yaml as valid from this run
+            # onward without writing that file. LegendDataManagement's error
+            # for the missing file, "File ... referenced by
+            # ValiditySelection(...) not found", is an ErrorException whose
+            # message does not contain "validity" (lowercase) -- unlike the
+            # "no validity entry covers this run" case qc_ml_pars treats as
+            # absence -- so it must propagate rather than resolve to `nothing`.
+            writevalidity(l200.par.rpars.ml, fk, (fk.period, fk.run); category=fk.category)
+            @test_throws ErrorException qc_ml_pars(l200, fk)
         end
     end
 end

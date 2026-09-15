@@ -48,7 +48,8 @@ Grid search over `cost` × `gamma` with stratified `n_folds` cross-validation
 on balanced accuracy, then a refit on all data with the best pair. The report
 holds the grid scores, a holdout confusion matrix (20 % stratified split),
 per-class and per-group accuracy. `groups` (e.g. detector types) must be
-index-aligned with `y`.
+index-aligned with `y`. `class_accuracy[i]` is `missing`, not `0`, when
+`classes[i]` has no rows in the holdout split.
 """
 function train_svm(X::AbstractMatrix{<:Real}, y::AbstractVector{<:Integer}, svm_config::PropDict;
         groups::AbstractVector=fill(:all, length(y)), rng::AbstractRNG=Random.default_rng())
@@ -86,7 +87,10 @@ function train_svm(X::AbstractMatrix{<:Real}, y::AbstractVector{<:Integer}, svm_
     y_pred = Int.(unwrap.(_predict_mode(mach_h, table(X[test_idx, :]))))
     y_test = yint[test_idx]
     confusion = _confusion(classes, y_test, y_pred)
-    class_accuracy = [confusion[i, i] / max(sum(confusion[i, :]), 1) for i in eachindex(classes)]
+    # A class absent from the holdout split has no accuracy to report, not an
+    # accuracy of 0.
+    class_accuracy = Union{Missing,Float64}[
+        (n = sum(confusion[i, :])) == 0 ? missing : confusion[i, i] / n for i in eachindex(classes)]
     group_names = sort(unique(Symbol.(groups)))
     g_test = Symbol.(groups[test_idx])
     for g in group_names

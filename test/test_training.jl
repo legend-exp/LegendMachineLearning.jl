@@ -40,7 +40,7 @@ end
         @test rep.classes == [0, 3]
         @test size(rep.confusion) == (2, 2)
         @test sum(rep.confusion) == round(Int, rep.holdout_fraction * 80)
-        @test all(rep.class_accuracy .>= 0.9)
+        @test all(>=(0.9), skipmissing(rep.class_accuracy))
         @test rep.groups == [:a, :b]
         @test all(rep.group_accuracy .>= 0.9)
         m = LegendMLModel(mach, HaarFeatures(n_samples=4, bl_window=0.0u"µs"..0.001u"µs"),
@@ -48,6 +48,19 @@ end
         @test predict_labels(m, X[1:3, :]) == [0, 0, 0]
         @test predict_labels(m, X[end-2:end, :]) == [3, 3, 3]
         @test_throws "probabilistic" predict_with_margin(m, X[1:2, :])
+    end
+
+    @testset "class_accuracy for a rare class" begin
+        # 80 rows total: two balanced classes plus one rare class of 3 rows,
+        # too small to be guaranteed a holdout row.
+        Xr = vcat(-1 .+ 0.3 .* randn(StableRNG(20), 38, 4), 1 .+ 0.3 .* randn(StableRNG(21), 39, 4),
+            5 .+ 0.3 .* randn(StableRNG(22), 3, 4))
+        yr = vcat(fill(0, 38), fill(3, 39), fill(7, 3))
+        _, rep_r = train_svm(Xr, yr, svm_cfg(); rng=StableRNG(1))
+        i_rare = only(findall(==(7), rep_r.classes))
+        a = rep_r.class_accuracy[i_rare]
+        @test ismissing(a) || (a isa Float64 && 0.0 <= a <= 1.0)
+        @test eltype(rep_r.class_accuracy) == Union{Missing,Float64}
     end
 
     @testset "probabilistic model with margins" begin

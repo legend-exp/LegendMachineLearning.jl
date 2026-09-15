@@ -2,6 +2,7 @@
 
 "Label value of an exemplar that has not been assigned a category yet."
 const UNLABELED = -1
+export UNLABELED
 
 """
     propagate_labels(cluster::ClusterResult, exemplar_labels) -> Vector{Int}

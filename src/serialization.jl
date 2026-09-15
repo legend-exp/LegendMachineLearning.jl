@@ -2,6 +2,7 @@
 
 "Layout version of the JLD2 model file; loading a different version is an error."
 const MODEL_FORMAT_VERSION = 1
+export MODEL_FORMAT_VERSION
 
 # Writes go to a temporary file in the target directory and are renamed into place, so an interrupted write never leaves a truncated file at the final path.
 function _atomic_write(writer, path::AbstractString)
@@ -18,6 +19,7 @@ end
 
 "SHA-256 of the file at `path`, as a lowercase hex string."
 file_sha256(path::AbstractString) = open(io -> bytes2hex(sha256(io)), path)
+export file_sha256
 
 """
     save_model(path, m::LegendMLModel) -> sha256::String
@@ -107,6 +109,7 @@ function cluster_result_to_props(c::ClusterResult)
     pd.iterations = c.iterations
     pd
 end
+export cluster_result_to_props
 
 """
     cluster_result(props::PropDict, assignment, exemplars) -> ClusterResult
@@ -119,3 +122,4 @@ function cluster_result(props::PropDict, assignment::AbstractVector{<:Integer}, 
         tol=Float64(props.tol), metric=String(props.metric))
     ClusterResult(hp, collect(Int, assignment), collect(Int, exemplars), Bool(props.converged), Int(props.iterations))
 end
+export cluster_result

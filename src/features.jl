@@ -34,6 +34,7 @@ function haar_passes(fe::HaarFeatures, n_input::Integer)
         throw(ArgumentError("waveform length $n_input is not a power-of-two multiple of n_samples = $(fe.n_samples)"))
     Int(log2(ratio))
 end
+export haar_passes
 
 """
     features(fe::HaarFeatures, wvfs::AbstractVector{<:RDWaveform}) -> Matrix{Float32}

@@ -3,7 +3,7 @@
 import Test
 import LegendMachineLearning
 
-Test.@testset "Package LegendMachineLearning" begin
+Test.@testset verbose=true "Package LegendMachineLearning" begin
     include("test_aqua.jl")
     include("test_explicit_imports.jl")
     include("test_features.jl")
@@ -15,5 +15,4 @@ Test.@testset "Package LegendMachineLearning" begin
     include("test_legend_io.jl")
     include("test_pipeline.jl")
     include("test_docs.jl")
-    Test.@test isempty(Test.detect_ambiguities(LegendMachineLearning))
 end
