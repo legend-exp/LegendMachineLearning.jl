@@ -3,6 +3,20 @@
 "Layout version of the JLD2 model file; loading a different version is an error."
 const MODEL_FORMAT_VERSION = 1
 
+# Writes go to a temporary file in the target directory and are renamed into place, so an interrupted write never leaves a truncated file at the final path.
+function _atomic_write(writer, path::AbstractString)
+    mkpath(dirname(path))
+    tmp = tempname(dirname(path); cleanup=false)
+    try
+        writer(tmp)
+        mv(tmp, path; force=true)
+    finally
+        isfile(tmp) && rm(tmp)
+    end
+    path
+end
+
+"SHA-256 of the file at `path`, as a lowercase hex string."
 file_sha256(path::AbstractString) = open(io -> bytes2hex(sha256(io)), path)
 
 """
@@ -13,8 +27,8 @@ extractor, the category table, the metadata, and `MODEL_FORMAT_VERSION`.
 Returns the SHA-256 of the written file.
 """
 function save_model(path::AbstractString, m::LegendMLModel)
-    jldsave(path; format_version=MODEL_FORMAT_VERSION, machine=serializable(m.machine),
-        features=m.features, categories=m.categories, metadata=m.metadata)
+    _atomic_write(tmp -> jldsave(tmp; format_version=MODEL_FORMAT_VERSION, machine=serializable(m.machine),
+        features=m.features, categories=m.categories, metadata=m.metadata), path)
     file_sha256(path)
 end
 export save_model
@@ -52,12 +66,14 @@ parameter database (see `cluster_result_to_props`).
 function write_sample(path::AbstractString, s::WaveformSample, c::ClusterResult)
     length(c.assignment) == length(s) ||
         throw(DimensionMismatch("$(length(c.assignment)) cluster assignments for $(length(s)) sample rows"))
-    lh5open(path, "w") do f
-        f["sample"] = Table(waveform=s.waveform, filekey=string.(s.filekey), eventnumber=s.eventnumber,
-            channel=string.(s.channel), detector=string.(s.detector), det_type=String.(s.det_type),
-            daqenergy=s.daqenergy)
-        f["clustering/assignment"] = c.assignment
-        f["clustering/exemplars"] = c.exemplars
+    _atomic_write(path) do tmp
+        lh5open(tmp, "w") do f
+            f["sample"] = Table(waveform=s.waveform, filekey=string.(s.filekey), eventnumber=s.eventnumber,
+                channel=string.(s.channel), detector=string.(s.detector), det_type=String.(s.det_type),
+                daqenergy=s.daqenergy)
+            f["clustering/assignment"] = c.assignment
+            f["clustering/exemplars"] = c.exemplars
+        end
     end
     nothing
 end

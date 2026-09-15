@@ -47,7 +47,9 @@ end
         write_sample(path, s, c)
         s2, assignment, exemplars = read_sample(path)
         @test length(s2) == 3
-        @test s2.waveform[2].signal == wf(2).signal
+        @test s2.waveform isa ArrayOfRDWaveforms
+        @test all(s2.waveform[i].signal == wf(i).signal for i in 1:3)
+        @test all(s2.waveform[i].time == wf(i).time for i in 1:3)
         @test s2.filekey == s.filekey
         @test s2.eventnumber == s.eventnumber
         @test s2.channel == s.channel
