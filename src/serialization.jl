@@ -1,1 +1,105 @@
 # This file is a part of LegendMachineLearning.jl, licensed under the MIT License (MIT).
+
+"Layout version of the JLD2 model file; loading a different version is an error."
+const MODEL_FORMAT_VERSION = 1
+
+file_sha256(path::AbstractString) = open(io -> bytes2hex(sha256(io)), path)
+
+"""
+    save_model(path, m::LegendMLModel) -> sha256::String
+
+Write the model as JLD2: the machine in its serializable form, the feature
+extractor, the category table, the metadata, and `MODEL_FORMAT_VERSION`.
+Returns the SHA-256 of the written file.
+"""
+function save_model(path::AbstractString, m::LegendMLModel)
+    jldsave(path; format_version=MODEL_FORMAT_VERSION, machine=serializable(m.machine),
+        features=m.features, categories=m.categories, metadata=m.metadata)
+    file_sha256(path)
+end
+export save_model
+
+"""
+    load_model(path; expected_sha256=nothing) -> LegendMLModel
+
+Read a model written by `save_model`. When `expected_sha256` is given the
+file digest must match it.
+"""
+function load_model(path::AbstractString; expected_sha256::Union{Nothing,AbstractString}=nothing)
+    isfile(path) || throw(ArgumentError("model file $path does not exist"))
+    if expected_sha256 !== nothing
+        actual = file_sha256(path)
+        actual == expected_sha256 ||
+            throw(ArgumentError("SHA-256 of $path is $actual, expected $expected_sha256: the model file does not belong to the parameter entry"))
+    end
+    jldopen(path, "r") do f
+        v = f["format_version"]
+        v == MODEL_FORMAT_VERSION || throw(ArgumentError("model file format version $v, this package reads version $MODEL_FORMAT_VERSION"))
+        mach = f["machine"]
+        restore!(mach)
+        LegendMLModel(mach, f["features"], f["categories"], f["metadata"])
+    end
+end
+export load_model
+
+"""
+    write_sample(path, s::WaveformSample, c::ClusterResult)
+
+LH5 layout: table `sample` and arrays `clustering/assignment`, `clustering/exemplars`.
+Identifiers are stored as strings; hyperparameters and convergence go to the
+parameter database (see `cluster_result_to_props`).
+"""
+function write_sample(path::AbstractString, s::WaveformSample, c::ClusterResult)
+    length(c.assignment) == length(s) ||
+        throw(DimensionMismatch("$(length(c.assignment)) cluster assignments for $(length(s)) sample rows"))
+    lh5open(path, "w") do f
+        f["sample"] = Table(waveform=s.waveform, filekey=string.(s.filekey), eventnumber=s.eventnumber,
+            channel=string.(s.channel), detector=string.(s.detector), det_type=String.(s.det_type),
+            daqenergy=s.daqenergy)
+        f["clustering/assignment"] = c.assignment
+        f["clustering/exemplars"] = c.exemplars
+    end
+    nothing
+end
+export write_sample
+
+"""
+    read_sample(path) -> (sample, assignment, exemplars)
+"""
+function read_sample(path::AbstractString)
+    isfile(path) || throw(ArgumentError("sample file $path does not exist"))
+    lh5open(path, "r") do f
+        t = f["sample"][:]
+        s = WaveformSample(t.waveform, FileKey.(t.filekey), Int.(t.eventnumber), ChannelId.(t.channel),
+            DetectorId.(t.detector), Symbol.(t.det_type), Float64.(t.daqenergy))
+        s, Int.(f["clustering/assignment"][:]), Int.(f["clustering/exemplars"][:])
+    end
+end
+export read_sample
+
+"""
+    cluster_result_to_props(c::ClusterResult) -> PropDict
+
+Hyperparameters, `converged` and `iterations` as a parameter-database entry.
+"""
+function cluster_result_to_props(c::ClusterResult)
+    pd = PropDict()
+    for (k, v) in pairs(c.hyperparameters)
+        pd[k] = v
+    end
+    pd.converged = c.converged
+    pd.iterations = c.iterations
+    pd
+end
+
+"""
+    cluster_result(props::PropDict, assignment, exemplars) -> ClusterResult
+
+Inverse of `cluster_result_to_props` combined with the arrays from `read_sample`.
+"""
+function cluster_result(props::PropDict, assignment::AbstractVector{<:Integer}, exemplars::AbstractVector{<:Integer})
+    hp = (damp=Float64(props.damp), preference=Float64(props.preference),
+        preference_quantile=Float64(props.preference_quantile), maxiter=Int(props.maxiter),
+        tol=Float64(props.tol), metric=String(props.metric))
+    ClusterResult(hp, collect(Int, assignment), collect(Int, exemplars), Bool(props.converged), Int(props.iterations))
+end
