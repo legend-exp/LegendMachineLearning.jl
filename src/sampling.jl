@@ -63,7 +63,7 @@ function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, r
     eventnumber = reduce(vcat, (t.eventnumber for t in per_file))
     nrows = length(daqenergy)
     nrows > 0 || throw(ArgumentError("no raw events for $det in the first $(length(candidate_filekeys)) raw files"))
-    nrows < n_det && @warn "detector $det: only $nrows rows in the first $n_files_max raw files, quota is $n_det"
+    nrows < n_det && @warn "detector $det: only $nrows rows in the first $(length(candidate_filekeys)) raw files, quota is $n_det"
     sel = select_indices(daqenergy, n_det; zero_energy_fraction, rng)
     sel_set = Set(sel)
     parts = WaveformSample[]

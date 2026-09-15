@@ -57,6 +57,11 @@ end
         @test c_shared.exemplars == c.exemplars
     end
 
+    @testset "fit with no exemplar" begin
+        S, prefs = preference_grid(X, [0.5])
+        @test_throws "no exemplar" fit_affinity_propagation(X; damp=0.5, preference=prefs[1], maxiter=1)
+    end
+
     @testset "no converged grid point" begin
         @test_throws "no grid point converged" scan_affinity_propagation(X; damp=[0.5],
             preference_quantile=[0.5], target_n_clusters=3, maxiter=1)

@@ -51,15 +51,16 @@ end
     end
 
     @testset "class_accuracy for a rare class" begin
-        # 80 rows total: two balanced classes plus one rare class of 3 rows,
-        # too small to be guaranteed a holdout row.
+        # Two balanced classes plus one rare class of a single row: under
+        # `rng=StableRNG(1)` the stratified holdout split deterministically
+        # gives that class no holdout row (verified directly), so its
+        # class_accuracy must be missing rather than a fabricated 0.0.
         Xr = vcat(-1 .+ 0.3 .* randn(StableRNG(20), 38, 4), 1 .+ 0.3 .* randn(StableRNG(21), 39, 4),
-            5 .+ 0.3 .* randn(StableRNG(22), 3, 4))
-        yr = vcat(fill(0, 38), fill(3, 39), fill(7, 3))
+            5 .+ 0.3 .* randn(StableRNG(22), 1, 4))
+        yr = vcat(fill(0, 38), fill(3, 39), fill(7, 1))
         _, rep_r = train_svm(Xr, yr, svm_cfg(); rng=StableRNG(1))
         i_rare = only(findall(==(7), rep_r.classes))
-        a = rep_r.class_accuracy[i_rare]
-        @test ismissing(a) || (a isa Float64 && 0.0 <= a <= 1.0)
+        @test ismissing(rep_r.class_accuracy[i_rare])
         @test eltype(rep_r.class_accuracy) == Union{Missing,Float64}
     end
 

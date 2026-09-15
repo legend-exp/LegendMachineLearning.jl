@@ -87,6 +87,7 @@ end
             # absence -- so it must propagate rather than resolve to `nothing`.
             writevalidity(l200.par.rpars.ml, fk, (fk.period, fk.run); category=fk.category)
             @test_throws ErrorException qc_ml_pars(l200, fk)
+            @test_throws "not found" qc_ml_pars(l200, fk)
         end
     end
 end

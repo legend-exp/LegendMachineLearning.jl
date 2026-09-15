@@ -6,8 +6,9 @@
 Negative pairwise distance matrix `S` of the rows of `X` and the
 affinity-propagation preferences at the given quantiles. The quantiles are
 estimated from at most `n_pairs_max` distinct off-diagonal pairs `(i, j)`,
-`i < j`, drawn with `rng` (all pairs when there are `n_pairs_max` or fewer),
-so no full n(n-1)/2 vector of distances is materialized.
+`i < j`, drawn with `rng` (all pairs when there are `n_pairs_max` or fewer);
+on the sampling branch, pairs are drawn by rejection into a `Set` rather than
+enumerated, so no vector of size n(n-1)/2 is ever allocated.
 """
 function preference_grid(X::AbstractMatrix, quantiles::AbstractVector{<:Real};
         metric::SemiMetric=Cityblock(), rng::AbstractRNG=Random.default_rng(), n_pairs_max::Int=1_000_000)
@@ -18,8 +19,12 @@ function preference_grid(X::AbstractMatrix, quantiles::AbstractVector{<:Real};
     pairs = if n_pairs ≤ n_pairs_max
         [(i, j) for j in 1:n for i in 1:j-1]
     else
-        all_pairs = [(i, j) for j in 1:n for i in 1:j-1]
-        sample(rng, all_pairs, n_pairs_max; replace=false)
+        drawn = Set{Tuple{Int,Int}}()
+        while length(drawn) < n_pairs_max
+            i = rand(rng, 1:n); j = rand(rng, 1:n)
+            i == j || push!(drawn, minmax(i, j))
+        end
+        drawn
     end
     sampled = [S[i, j] for (i, j) in pairs]
     S, quantile(sampled, collect(Float64, quantiles))
@@ -51,7 +56,9 @@ the converged one whose cluster count is closest to `target_n_clusters`,
 fewest iterations on ties. Grid points share one similarity matrix and run
 sequentially: each cell's working set is four n×n matrices, so cells cannot
 run concurrently without either racing on the shared matrix or multiplying
-that memory by the number of threads.
+that memory by the number of threads. The shared matrix's diagonal is
+overwritten with the grid point's preference before each call, so it never
+holds a specific preference once the scan returns.
 """
 function scan_affinity_propagation(X::AbstractMatrix;
         damp::AbstractVector{<:Real}, preference_quantile::AbstractVector{<:Real},
@@ -87,13 +94,16 @@ export scan_affinity_propagation
 Fit affinity propagation on the rows of `X` at a single (`damp`,
 `preference`) grid point. Cluster `k` is the cluster containing
 exemplar `exemplars[k]`. `S`, when given, is the shared similarity matrix
-from `scan_affinity_propagation`, reused instead of recomputed.
+from `scan_affinity_propagation`, reused instead of recomputed; its diagonal
+is overwritten with `preference` on every call.
 """
 function fit_affinity_propagation(X::AbstractMatrix; damp::Real, preference::Real,
         preference_quantile::Real=NaN, maxiter::Int=1000, tol::Real=1e-6, metric::SemiMetric=Cityblock(),
         S::Union{Nothing,AbstractMatrix}=nothing)
     S = S === nothing ? -pairwise(metric, X, dims=1) : S
     assignment, exemplars, conv, iters = _run_ap(S, damp, preference, maxiter, tol)
+    isempty(exemplars) && throw(ArgumentError(
+        "affinity propagation found no exemplar for damp = $damp, preference = $preference within maxiter = $maxiter"))
     ClusterResult(
         (damp=Float64(damp), preference=Float64(preference), preference_quantile=Float64(preference_quantile),
          maxiter=maxiter, tol=Float64(tol), metric=string(nameof(typeof(metric)))),
