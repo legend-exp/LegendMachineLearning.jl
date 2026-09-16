@@ -26,13 +26,21 @@ end
     haar_passes(fe::HaarFeatures, n_input::Integer) -> Int
 
 Number of pairwise Haar averaging passes that bring `n_input` samples down to
-`fe.n_samples`. Throws when the ratio is not a power of two.
+`fe.n_samples`. Each pass halves the length, rounding up, so an odd length
+such as 781 reaches 196 in two passes. Throws when no number of passes
+reaches `fe.n_samples` exactly.
 """
 function haar_passes(fe::HaarFeatures, n_input::Integer)
-    ratio, r = divrem(n_input, fe.n_samples)
-    (r == 0 && ratio ≥ 1 && ispow2(ratio)) ||
-        throw(ArgumentError("waveform length $n_input is not a power-of-two multiple of n_samples = $(fe.n_samples)"))
-    Int(log2(ratio))
+    n_input ≥ fe.n_samples ||
+        throw(ArgumentError("waveform length $n_input is shorter than n_samples = $(fe.n_samples)"))
+    n, passes = Int(n_input), 0
+    while n > fe.n_samples
+        n = cld(n, 2)
+        passes += 1
+    end
+    n == fe.n_samples ||
+        throw(ArgumentError("waveform length $n_input cannot be reduced to n_samples = $(fe.n_samples) by pairwise Haar averaging (reaches $n after $passes passes)"))
+    passes
 end
 export haar_passes
 

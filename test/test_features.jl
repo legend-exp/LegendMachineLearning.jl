@@ -18,8 +18,12 @@ step_wf(offset, amp; n=1024) = RDWaveform(range(0u"µs", step=0.016u"µs", lengt
     @testset "haar_passes" begin
         @test haar_passes(fe, 1024) == 2
         @test haar_passes(fe, 256) == 0
-        @test_throws "not a power-of-two multiple" haar_passes(fe, 768)
-        @test_throws "not a power-of-two multiple" haar_passes(fe, 128)
+        @test_throws "cannot be reduced" haar_passes(fe, 768)
+        @test_throws "shorter than" haar_passes(fe, 128)
+        # presummed LEGEND-200 waveforms have 781 samples: two passes give 196
+        fe781 = HaarFeatures(n_samples=196, bl_window=0.0u"µs"..2.0u"µs")
+        @test haar_passes(fe781, 781) == 2
+        @test haar_passes(fe781, 6248) == 5   # the full-resolution length, presum factor 8
     end
 
     @testset "shape, baseline removal and normalization" begin
