@@ -10,10 +10,15 @@ estimated from at most `n_pairs_max` distinct off-diagonal pairs `(i, j)`,
 on the sampling branch, pairs are drawn by rejection into a `Set` rather than
 enumerated, so no vector of size n(n-1)/2 is ever allocated.
 """
+# The similarity matrix is Float64 whatever the feature eltype: affinity propagation declares
+# convergence when the message change scaled by 1/(1 - damp) drops below `tol`, an absolute
+# threshold that Float32 rounding noise on similarities of order 10 to 100 never reaches.
+_similarity(X::AbstractMatrix, metric::SemiMetric) = -pairwise(metric, Matrix{Float64}(X), dims=1)
+
 function preference_grid(X::AbstractMatrix, quantiles::AbstractVector{<:Real};
         metric::SemiMetric=Cityblock(), rng::AbstractRNG=Random.default_rng(), n_pairs_max::Int=1_000_000)
     Base.require_one_based_indexing(X)
-    S = -pairwise(metric, X, dims=1)
+    S = _similarity(X, metric)
     n = size(S, 1)
     n_pairs = n * (n - 1) ÷ 2
     pairs = if n_pairs ≤ n_pairs_max
@@ -100,7 +105,7 @@ is overwritten with `preference` on every call.
 function fit_affinity_propagation(X::AbstractMatrix; damp::Real, preference::Real,
         preference_quantile::Real=NaN, maxiter::Int=1000, tol::Real=1e-6, metric::SemiMetric=Cityblock(),
         S::Union{Nothing,AbstractMatrix}=nothing)
-    S = S === nothing ? -pairwise(metric, X, dims=1) : S
+    S = S === nothing ? _similarity(X, metric) : S
     assignment, exemplars, conv, iters = _run_ap(S, damp, preference, maxiter, tol)
     isempty(exemplars) && throw(ArgumentError(
         "affinity propagation found no exemplar for damp = $damp, preference = $preference within maxiter = $maxiter"))

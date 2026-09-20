@@ -19,6 +19,14 @@ end
 
     @testset "preference_grid" begin
         S, prefs = preference_grid(X, [0.1, 0.5])
+        @test eltype(S) == Float64
+        # Float32 features (the feature extractor's output) still give a Float64 similarity
+        # matrix, otherwise the absolute convergence tolerance of affinity propagation is unreachable
+        S32, _ = preference_grid(Float32.(X), [0.1, 0.5])
+        @test eltype(S32) == Float64
+        r32 = scan_affinity_propagation(Float32.(X); damp=[0.9], preference_quantile=[0.05],
+            target_n_clusters=3, maxiter=500)
+        @test r32.converged[1, 1]
         @test size(S) == (90, 90)
         @test all(S .<= 0)
         @test issorted(prefs)
