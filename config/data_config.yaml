@@ -1,0 +1,12 @@
+# Data Configuration for ML-based LAr Veto
+# Relative paths are resolved against the project root directory
+
+paths:
+  config: config
+  metadata: metadata
+  generated: generated
+  # External: HPGe positioning geometry (extra_meta)
+  legend_pygeom: /ptmp/jonsc/analysis-scripts/sipm-analysis/legend-pygeom-l200
+
+# LegendData config (provides jlevt tier, legend-metadata, etc.)
+legend_data_config: /ptmp/oschulz/legend/data/l200/tmp/jl-v0.6.0dev8/config.json

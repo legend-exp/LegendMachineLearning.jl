@@ -1,0 +1,11 @@
+# Validity mapping for HPO search-space configs
+# Format: config_file: [list of groups that use this config]
+
+mlgroup001.yaml:
+  - mlgroup001
+mlgroup002.yaml:
+  - mlgroup002
+mlgroup003.yaml:
+  - mlgroup003
+mlgroup004.yaml:
+  - mlgroup004

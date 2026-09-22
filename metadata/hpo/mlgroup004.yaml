@@ -1,0 +1,65 @@
+# HPO search-space for mlgroup004 (larger dataset → R=81)
+#
+# Hyperband-driven search over the architecture+training hyperparameters of
+# the chosen model (selected via processing_config.processors.process_hpo.kwargs.model).
+# The processor retrains for `resources` epochs each bracket and reports the
+# objective metric (val_loss or k42_sf) as the optimization target.
+
+mlp_detector_concat:
+  # Hyperband schedule
+  hyperband:
+    R: 81                 # max epochs any single trial can receive (≥27 to give BOHB enough observations)
+    eta: 3                # bracket reduction factor (3 ≈ aggressive pruning)
+    inner_sampler: bohb   # `random` (fast) or `bohb` (Bayesian + KDE; smarter once enough observations)
+
+  # Optimization objective.
+  #   metric: val_loss   → only minimise validation BCE
+  #   metric: k42_sf     → only minimise K42 survival fraction (= 4×4-baseline-matched)
+  #   metric: composite  → weighted sum of all three components below
+  # Composite formula:
+  #   score = w_k42*k42_sf + w_vl*val_loss + w_og*max(0, val_loss - train_loss)
+  # Set any weight to 0 to disable that component (e.g. weights={val_loss: 1.0,
+  # overfit_gap: 0.0} reproduces metric=val_loss). `physics_dataset:` is only
+  # consumed when w_k42 > 0.
+  objective:
+    metric: composite
+    physics_dataset: physics_k40_k42
+    weights:
+      k42_sf:      1.0   # primary physics target
+      val_loss:    0.5   # keep BCE low (training stability)
+      overfit_gap: 0.5   # penalise val-train gap (overfit suppression)
+
+  # Per-trial training overrides applied on top of the metadata/training cfg
+  trial:
+    early_stopping_patience: 40   # tighter than full training (25 < R)
+    batch_size: 1024
+    optimizer: adamw
+    seed: 1234
+
+  # Search space — keys must match metadata/training/<group>.yaml structure.
+  # Three sampler types supported: `range`, `log_range`, `choice`.
+  # Ranges are trimmed based on the top-5 trials of the previous BOHB run:
+  #   width_mult = 2.0 dominated, dropout clustered at 0.10–0.16, lr ≥ 8e-4,
+  #   weight_decay ≤ 6e-3, activation: relu/swish/gelu (tanh never made top-3).
+  search_space:
+    learning_rate:
+      type: log_range
+      lo: 3.0e-4
+      hi: 5.0e-3
+    weight_decay:
+      type: log_range
+      lo: 1.0e-6
+      hi: 1.0e-2
+    dropout:
+      type: range
+      lo: 0.02
+      hi: 0.30
+    width_mult:
+      type: choice
+      values: [0.5, 1.0, 1.5, 2.0, 2.5]   # multiplied onto base widths [512, 256, 128, 64]
+    activation:
+      type: choice
+      values: [gelu, swish, relu, tanh, leaky_relu]
+    batch_norm:
+      type: choice
+      values: [false]   # batch_norm=true crashes on this cluster: cuDNN libcudnn not loaded
