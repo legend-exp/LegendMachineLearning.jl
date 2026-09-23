@@ -64,6 +64,23 @@ using RadiationDetectorSignals: ArrayOfRDWaveforms
     @test count(==(:uniform), stratum_s) == 5
     @test count(==(:top_up), stratum_s) == 13
 
+    # The baseline sits about 2000 ADC apart in the two groups. Against the pool-wide
+    # median that offset swamps the spread and no row stands out; against the median of
+    # its own group only the two planted rows do.
+    m = 100
+    bl_a = 15000 .+ rand(rng, -30.0:1.0:30.0, m)
+    bl_b = 17000 .+ rand(rng, -30.0:1.0:30.0, m)
+    bl_a[3] = 15600.0
+    bl_b[7] = 17600.0
+    grouped = Table(daqenergy=fill(1000.0, 2m), baseline=vcat(bl_a, bl_b),
+        file=vcat(fill(:a, m), fill(:b, m)))
+    idx_g, stratum_g = select_indices(grouped, 40; baseline_outlier=0.05, baseline_mad=5.0,
+        baseline_group=:file, rng)
+    @test [i for (i, s) in zip(idx_g, stratum_g) if s == :baseline_outlier] == [3, m + 7]
+    _, stratum_p = select_indices(grouped, 40; baseline_outlier=0.05, baseline_mad=5.0, rng)
+    @test count(==(:baseline_outlier), stratum_p) == 0
+    @test_throws "baseline_group names" select_indices(grouped, 10; baseline_group=:run, rng)
+
     @test_throws "zero_energy must be between 0 and 1" select_indices(cand, 10; zero_energy=1.5, rng)
     @test_throws "sum to at most 1" select_indices(cand, 10; zero_energy=0.6, high_energy=0.6, rng)
     @test_throws "high_energy_quantile must be between 0 and 1" select_indices(cand, 10; high_energy_quantile=1.5, rng)

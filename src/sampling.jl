@@ -100,7 +100,7 @@ export scan_candidates
 
 """
     select_indices(cand, n; exclude, zero_energy, high_energy, high_energy_quantile,
-                   baseline_outlier, baseline_mad, rng) -> (idx, stratum)
+                   baseline_outlier, baseline_mad, baseline_group, rng) -> (idx, stratum)
 
 Sorted row indices of the candidate table `cand` together with the name of
 the stratum each one was drawn by, `length(idx) == min(n, pool size)`. The
@@ -111,12 +111,17 @@ The strata are drawn in turn, without replacement and each one only from
 rows the earlier ones left: `:zero_energy` (`daqenergy == 0`),
 `:high_energy` (`daqenergy` at or above the `high_energy_quantile` quantile
 of the pool's triggered energies), `:baseline_outlier` (`baseline` further
-than `baseline_mad` times the pool's median absolute deviation from the
-pool's median baseline), and `:uniform` for the rest of `n` from the
+than `baseline_mad` times the pool's median absolute deviation from its
+reference baseline), and `:uniform` for the rest of `n` from the
 triggered rows. Each of the first three is capped at `round(Int, fraction *
 n)` rows, and at what the pool holds, so a stratum that runs short leaves
 its share to the later ones. Zero-energy rows labeled `:top_up` make up the
 count when the triggered rows run out.
+
+The reference baseline is the pool's median. When `baseline_group` names a
+column of `cand`, each row is instead referred to the median of the pool
+rows sharing its value in that column, which keeps a baseline that shifts
+between groups from turning a whole group into outliers.
 
 `n` at or above the pool size returns the whole pool, each row labeled by
 the first stratum rule it satisfies.
@@ -124,7 +129,7 @@ the first stratum rule it satisfies.
 function select_indices(cand, n::Integer;
         exclude=Symbol[], zero_energy::Real=0, high_energy::Real=0,
         high_energy_quantile::Real=0.9, baseline_outlier::Real=0, baseline_mad::Real=5,
-        rng::AbstractRNG=Random.default_rng())
+        baseline_group=nothing, rng::AbstractRNG=Random.default_rng())
     n ≥ 0 || throw(ArgumentError("n must be non-negative, got $n"))
     0 ≤ high_energy_quantile ≤ 1 ||
         throw(ArgumentError("high_energy_quantile must be between 0 and 1, got $high_energy_quantile"))
@@ -139,21 +144,34 @@ function select_indices(cand, n::Integer;
             throw(ArgumentError("exclude names $name, which is not a column of the candidate table"))
     end
 
+    isnothing(baseline_group) || baseline_group in propertynames(cand) ||
+        throw(ArgumentError("baseline_group names $baseline_group, which is not a column of the candidate table"))
+
     e, bl = cand.daqenergy, cand.baseline
     excluded = fill(false, axes(e))
     for name in exclude
         excluded .|= getproperty(cand, name)
     end
     pool = findall(!, excluded)
-    med = isempty(pool) ? zero(eltype(bl)) : median(bl[pool])
-    dev = isempty(pool) ? zero(eltype(bl)) : median(abs.(bl[pool] .- med))
+    # Only pool rows are ever asked for their deviation; the rest keep the zero they start at.
+    deviation = zeros(float(eltype(bl)), axes(bl))
+    if isnothing(baseline_group)
+        isempty(pool) || (deviation[pool] .= bl[pool] .- median(bl[pool]))
+    else
+        group = getproperty(cand, baseline_group)
+        for g in unique(group[pool])
+            rows = [i for i in pool if isequal(group[i], g)]
+            deviation[rows] .= bl[rows] .- median(bl[rows])
+        end
+    end
+    spread = isempty(pool) ? zero(eltype(deviation)) : median(abs.(deviation[pool]))
     triggered = [e[i] for i in pool if e[i] > 0]
     # With no triggered row in the pool the high-energy stratum stays empty instead of
     # matching every row.
     threshold = isempty(triggered) ? Inf : quantile(triggered, high_energy_quantile)
     rules = ((:zero_energy, i -> iszero(e[i]), round(Int, zero_energy * n)),
         (:high_energy, i -> e[i] ≥ threshold, round(Int, high_energy * n)),
-        (:baseline_outlier, i -> abs(bl[i] - med) > baseline_mad * dev, round(Int, baseline_outlier * n)),
+        (:baseline_outlier, i -> abs(deviation[i]) > baseline_mad * spread, round(Int, baseline_outlier * n)),
         (:uniform, i -> e[i] > 0, n),
         (:top_up, i -> iszero(e[i]), n))
 
@@ -198,8 +216,11 @@ function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, r
     nrows = length(cand)
     nrows > 0 || throw(ArgumentError("no raw events for $det in $(length(filekeys)) raw files"))
     nrows < n_det && @warn "detector $det: only $nrows rows in $(length(filekeys)) raw files, quota is $n_det"
+    # The FPGA baseline drifts from file to file, so an outlier is one against the baselines
+    # of its own file rather than against those of the whole period.
     idx, stratum = select_indices(cand, n_det; strata.exclude, strata.zero_energy, strata.high_energy,
-        strata.high_energy_quantile, strata.baseline_outlier, strata.baseline_mad, rng)
+        strata.high_energy_quantile, strata.baseline_outlier, strata.baseline_mad,
+        baseline_group=:filekey, rng)
     isempty(idx) && throw(ArgumentError("no candidate rows left for $det after excluding $(strata.exclude)"))
     files = cand.filekey[idx]
     parts = map(unique(files)) do fk
@@ -232,8 +253,9 @@ coincidence window in µs by which those channels' triggers are matched to
 the detector's events (125 when absent), `exclude` lists the flags whose
 events stay out of the pool, and `zero_energy`, `high_energy`,
 `high_energy_quantile`, `baseline_outlier` and `baseline_mad` parameterize
-the strata of `select_indices`. A key left out means no flags, nothing
-excluded, or an empty stratum.
+the strata of `select_indices`. Baseline outliers are judged per raw file,
+since the FPGA baseline drifts between them. A key left out means no flags,
+nothing excluded, or an empty stratum.
 
 `filekeys` defaults to the raw files of every analysis run of the period, so
 rows may come from any run of it; `filekey` itself only names the period and
