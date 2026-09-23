@@ -39,7 +39,8 @@ end
     s = WaveformSample(ArrayOfRDWaveforms([wf(1), wf(2), wf(3)]),
         FileKey.(["l200-p03-r001-cal-20230318T012144Z", "l200-p03-r001-cal-20230318T012144Z", "l200-p03-r001-cal-20230318T022144Z"]),
         [10, 20, 30], ChannelId.([1121600, 1121600, 1084803]), DetectorId.([:V00048B, :V00048B, :B00035A]),
-        [:icpc, :icpc, :bege], [100.0, 0.0, 5000.0])
+        [:icpc, :icpc, :bege], [100.0, 0.0, 5000.0], [15000.0, 14980.0, 15020.0],
+        [1.0e9, 1.0e9 + 0.5, 1.0e9 + 1.25]u"s", [:uniform, :zero_energy, :high_energy])
     c = ClusterResult((damp=0.7, preference=-12.5, preference_quantile=0.05, maxiter=100, tol=1e-6, metric="Cityblock"),
         [1, 1, 2], [1, 3], true, 42)
     mktempdir() do dir
@@ -56,6 +57,9 @@ end
         @test s2.detector == s.detector
         @test s2.det_type == s.det_type
         @test s2.daqenergy == s.daqenergy
+        @test s2.baseline == s.baseline
+        @test s2.timestamp == s.timestamp
+        @test s2.stratum == s.stratum
         @test assignment == c.assignment && exemplars == c.exemplars
         props = cluster_result_to_props(c)
         @test props.converged == true && props.iterations == 42 && props.damp == 0.7

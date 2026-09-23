@@ -62,8 +62,8 @@ export load_model
     write_sample(path, s::WaveformSample, c::ClusterResult)
 
 LH5 layout: table `sample` and arrays `clustering/assignment`, `clustering/exemplars`.
-Identifiers are stored as strings; hyperparameters and convergence go to the
-parameter database (see `cluster_result_to_props`).
+Identifiers and stratum names are stored as strings; hyperparameters and
+convergence go to the parameter database (see `cluster_result_to_props`).
 """
 function write_sample(path::AbstractString, s::WaveformSample, c::ClusterResult)
     length(c.assignment) == length(s) ||
@@ -72,7 +72,8 @@ function write_sample(path::AbstractString, s::WaveformSample, c::ClusterResult)
         lh5open(tmp, "w") do f
             f["sample"] = Table(waveform=s.waveform, filekey=string.(s.filekey), eventnumber=s.eventnumber,
                 channel=string.(s.channel), detector=string.(s.detector), det_type=String.(s.det_type),
-                daqenergy=s.daqenergy)
+                daqenergy=s.daqenergy, baseline=s.baseline, timestamp=s.timestamp,
+                stratum=String.(s.stratum))
             f["clustering/assignment"] = c.assignment
             f["clustering/exemplars"] = c.exemplars
         end
@@ -89,7 +90,8 @@ function read_sample(path::AbstractString)
     lh5open(path, "r") do f
         t = f["sample"][:]
         s = WaveformSample(t.waveform, FileKey.(t.filekey), Int.(t.eventnumber), ChannelId.(t.channel),
-            DetectorId.(t.detector), Symbol.(t.det_type), Float64.(t.daqenergy))
+            DetectorId.(t.detector), Symbol.(t.det_type), Float64.(t.daqenergy), Float64.(t.baseline),
+            collect(typeof(1.0u"s"), t.timestamp), Symbol.(t.stratum))
         s, Int.(f["clustering/assignment"][:]), Int.(f["clustering/exemplars"][:])
     end
 end

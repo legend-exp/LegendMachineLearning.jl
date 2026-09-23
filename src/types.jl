@@ -13,7 +13,8 @@ export AbstractFeatureExtractor
     WaveformSample
 
 Waveforms selected for training together with everything needed to trace
-each one back to its raw event. All vectors share the same axes.
+each one back to its raw event. `stratum` names the selection rule each row
+was drawn by. All vectors share the same axes.
 """
 struct WaveformSample
     waveform::ArrayOfRDWaveforms
@@ -23,13 +24,18 @@ struct WaveformSample
     detector::Vector{DetectorId}
     det_type::Vector{Symbol}
     daqenergy::Vector{Float64}
-    function WaveformSample(waveform, filekey, eventnumber, channel, detector, det_type, daqenergy)
+    baseline::Vector{Float64}
+    timestamp::Vector{typeof(1.0u"s")}
+    stratum::Vector{Symbol}
+    function WaveformSample(waveform, filekey, eventnumber, channel, detector, det_type,
+            daqenergy, baseline, timestamp, stratum)
         ax = axes(waveform, 1)
         for (name, v) in ((:filekey, filekey), (:eventnumber, eventnumber), (:channel, channel),
-                          (:detector, detector), (:det_type, det_type), (:daqenergy, daqenergy))
+                          (:detector, detector), (:det_type, det_type), (:daqenergy, daqenergy),
+                          (:baseline, baseline), (:timestamp, timestamp), (:stratum, stratum))
             axes(v, 1) == ax || throw(DimensionMismatch("field $name has axes $(axes(v, 1)), waveform has $ax"))
         end
-        new(waveform, filekey, eventnumber, channel, detector, det_type, daqenergy)
+        new(waveform, filekey, eventnumber, channel, detector, det_type, daqenergy, baseline, timestamp, stratum)
     end
 end
 export WaveformSample
@@ -38,7 +44,8 @@ Base.length(s::WaveformSample) = length(s.waveform)
 
 Base.getindex(s::WaveformSample, idxs) = WaveformSample(
     s.waveform[idxs], s.filekey[idxs], s.eventnumber[idxs], s.channel[idxs],
-    s.detector[idxs], s.det_type[idxs], s.daqenergy[idxs])
+    s.detector[idxs], s.det_type[idxs], s.daqenergy[idxs], s.baseline[idxs],
+    s.timestamp[idxs], s.stratum[idxs])
 
 function Base.vcat(samples::WaveformSample...)
     WaveformSample(
@@ -48,7 +55,10 @@ function Base.vcat(samples::WaveformSample...)
         reduce(vcat, (s.channel for s in samples)),
         reduce(vcat, (s.detector for s in samples)),
         reduce(vcat, (s.det_type for s in samples)),
-        reduce(vcat, (s.daqenergy for s in samples)))
+        reduce(vcat, (s.daqenergy for s in samples)),
+        reduce(vcat, (s.baseline for s in samples)),
+        reduce(vcat, (s.timestamp for s in samples)),
+        reduce(vcat, (s.stratum for s in samples)))
 end
 
 """

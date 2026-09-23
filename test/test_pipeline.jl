@@ -42,7 +42,8 @@ end
     n = length(sig)
     s = WaveformSample(ArrayOfRDWaveforms(wf.(sig)),
         fill(FileKey("l200-p03-r001-cal-20230318T012144Z"), n), collect(1:n),
-        fill(ChannelId(1121600), n), fill(DetectorId(:V00048B), n), fill(:icpc, n), fill(1000.0, n))
+        fill(ChannelId(1121600), n), fill(DetectorId(:V00048B), n), fill(:icpc, n), fill(1000.0, n),
+        fill(15000.0, n), collect(Float64, 1:n) .* u"s", fill(:uniform, n))
     c = ClusterResult((damp=0.5, preference=-1.0, preference_quantile=0.05, maxiter=10, tol=1e-6, metric="Cityblock"),
         vcat(fill(1, 40), fill(2, 40)), [1, 41], true, 5)
     training_fk = FileKey("l200-p03-r002-cal-20230501T000000Z")

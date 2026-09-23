@@ -19,7 +19,10 @@ function make_sample(n)
         fill(ChannelId(1121600), n),
         fill(DetectorId(:V00048B), n),
         fill(:icpc, n),
-        collect(Float64, 1:n))
+        collect(Float64, 1:n),
+        fill(15000.0, n),
+        collect(Float64, 1:n) .* u"s",
+        fill(:uniform, n))
 end
 
 @testset "WaveformSample" begin
@@ -29,11 +32,14 @@ end
     @test length(s2) == 2
     @test s2.eventnumber == [2, 3]
     @test s2.daqenergy == [2.0, 3.0]
+    @test s2.timestamp == [2.0, 3.0]u"s"
+    @test s2.stratum == [:uniform, :uniform]
     s3 = vcat(s, s2)
     @test length(s3) == 6
     @test s3.eventnumber == [1, 2, 3, 4, 2, 3]
+    @test s3.baseline == fill(15000.0, 6)
     @test_throws DimensionMismatch WaveformSample(s.waveform, s.filekey, s.eventnumber[1:3],
-        s.channel, s.detector, s.det_type, s.daqenergy)
+        s.channel, s.detector, s.det_type, s.daqenergy, s.baseline, s.timestamp, s.stratum)
 end
 
 @testset "propagate_labels" begin
