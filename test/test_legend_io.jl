@@ -2,8 +2,8 @@
 
 using Test
 using LegendMachineLearning
-using LegendMachineLearning: qc_model_filename, model_pars_entry, load_qc_model, qc_sample_filename,
-    qc_ml_pars, train_svm, save_model, HaarFeatures
+using LegendMachineLearning: qc_model_filename, qc_pars_entry_name, model_pars_entry, load_qc_model,
+    qc_sample_filename, qc_ml_pars, train_svm, save_model, HaarFeatures
 using LegendTestData, LegendDataManagement, PropDicts, StableRNGs, Unitful, IntervalSets
 using LegendDataManagement: writelprops
 using LegendDataManagement.LDMUtils: writevalidity
@@ -22,6 +22,9 @@ m = LegendMLModel(mach, HaarFeatures(n_samples=4, bl_window=0.0u"µs"..1.0u"µs"
     @test qc_model_filename("/x/l200-p03-r001-cal-20230318T012144Z-tier_jlqml.lh5") ==
         "/x/l200-p03-r001-cal-20230318T012144Z-tier_jlqml.jld2"
     @test_throws "expected an .lh5" qc_model_filename("/x/file.h5")
+    # One entry per run and category: the cal and the phy model of a run keep their own file.
+    @test qc_pars_entry_name(FileKey("l200-p03-r001-cal-20230318T012144Z")) == "p03/r001-cal.yaml"
+    @test qc_pars_entry_name(FileKey("l200-p03-r001-phy-20230318T012144Z")) == "p03/r001-phy.yaml"
 end
 
 @testset "pars entry" begin

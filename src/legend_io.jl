@@ -22,6 +22,17 @@ qc_model_filename(data::LegendData, fk::FileKey) = qc_model_filename(qc_sample_f
 export qc_model_filename
 
 """
+    qc_pars_entry_name(fk) -> String
+
+Path of the `rpars.ml` entry of `fk` relative to the props-DB directory.
+One file per run and category, so the cal and the phy model of a run keep
+their own entry. It names both the file the entry is written to and the
+`apply` path of its validity record.
+"""
+qc_pars_entry_name(fk::FileKey) = "$(fk.period)/$(fk.run)-$(fk.category).yaml"
+export qc_pars_entry_name
+
+"""
     qc_ml_pars(data, filekey) -> Union{PropDict, Nothing}
 
 Parameter entry of the QC model valid for `filekey` (`rpars.ml`), resolved
