@@ -34,7 +34,20 @@ labels = model(waveforms)
 ```
 
 The config lives under `dataprod_config(l200).qc(filekey).ml`, with keys
-`detectors`, `n_max`, `n_files_max`, `waveform_column`,
-`strata.zero_energy_fraction`, `features`, `affinity_propagation`, `svm`, and
-`categories`. `pars_entry` is what the processor writes to `rpars.ml`,
-together with a validity entry for the training run.
+`detectors`, `n_max`, `waveform_column`, `strata`, `features`,
+`affinity_propagation`, `svm`, and `categories`. The sample is drawn from the
+raw files of every analysis run of the period, in strata:
+
+```yaml
+strata:
+  aux_triggers: {pulser: PULS01, forced_trigger: BSLN01}
+  exclude: [pulser, forced_trigger]
+  zero_energy: 0.2
+  high_energy: 0.15
+  high_energy_quantile: 0.9
+  baseline_outlier: 0.15
+  baseline_mad: 5.0
+```
+
+`pars_entry` is what the processor writes to `rpars.ml`, together with a
+validity entry for the training run.

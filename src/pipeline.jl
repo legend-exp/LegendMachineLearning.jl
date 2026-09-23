@@ -16,16 +16,19 @@ export features_config
 _grid_rows(m::AbstractMatrix) = [collect(r) for r in eachrow(m)]
 
 """
-    run_qc_sampling(data, training_fk, config; rng, kwargs...) -> (sample, cluster, pars, scan)
+    run_qc_sampling(data, training_fk, config; rng, filekeys, kwargs...) -> (sample, cluster, pars, scan)
 
-Build the training sample of the run of `training_fk`, scan and fit affinity
-propagation, write the `jlqml` sample file, and return the parameter entry
-(with `exemplar_labels` initialized to `UNLABELED`) and the scan report.
-`kwargs` are forwarded to `build_sample` (e.g. `chinfo` to run without a
-channel map).
+Build the training sample of the period and category of `training_fk` from
+the raw files `filekeys`, scan and fit affinity propagation, write the
+`jlqml` sample file, and return the parameter entry (with
+`exemplar_labels` initialized to `UNLABELED`) and the scan report. `kwargs`
+are forwarded to `build_sample` (e.g. `chinfo` to run without a channel
+map).
 """
-function run_qc_sampling(data::LegendData, training_fk::FileKey, config::PropDict; rng::AbstractRNG=Random.default_rng(), kwargs...)
-    sample = build_sample(data, training_fk, config; rng, kwargs...)
+function run_qc_sampling(data::LegendData, training_fk::FileKey, config::PropDict;
+        rng::AbstractRNG=Random.default_rng(),
+        filekeys::AbstractVector{FileKey}=raw_filekeys(data, training_fk.period, training_fk.category), kwargs...)
+    sample = build_sample(data, training_fk, config; rng, filekeys, kwargs...)
     X = features(features_config(config), sample.waveform)
     ap = config.affinity_propagation
     damp = collect(range(Float64(ap.damp.min), Float64(ap.damp.max), length=Int(ap.damp.n)))
@@ -39,8 +42,10 @@ function run_qc_sampling(data::LegendData, training_fk::FileKey, config::PropDic
     write_sample(path, sample, cluster)
     pars = PropDict()
     pars.sample = PropDict(:n => length(sample), :detectors => string.(config.detectors),
-        :n_files_max => Int(config.n_files_max), :waveform_column => string(config.waveform_column),
-        :zero_energy_fraction => Float64(config.strata.zero_energy_fraction), :sample_sha256 => file_sha256(path))
+        :waveform_column => string(config.waveform_column), :n_files => length(filekeys),
+        :runs => unique(string(fk.run) for fk in filekeys), :strata => config.strata,
+        :n_per_stratum => PropDict((s => count(==(s), sample.stratum) for s in sort(unique(sample.stratum)))...),
+        :sample_sha256 => file_sha256(path))
     pars.affinity_propagation = cluster_result_to_props(cluster)
     pars.affinity_propagation.scan = PropDict(:damp => scan.damp, :preference_quantile => scan.preference_quantile,
         :preference => scan.preference, :n_clusters => _grid_rows(scan.n_clusters), :converged => _grid_rows(scan.converged),
