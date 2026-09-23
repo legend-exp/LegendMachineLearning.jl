@@ -41,6 +41,7 @@ raw files of every analysis run of the period, in strata:
 ```yaml
 strata:
   aux_triggers: {pulser: PULS01, forced_trigger: BSLN01}
+  ts_window: 125.0
   exclude: [pulser, forced_trigger]
   zero_energy: 0.2
   high_energy: 0.15

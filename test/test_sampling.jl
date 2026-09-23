@@ -2,8 +2,9 @@
 
 using Test
 using LegendMachineLearning
-using LegendMachineLearning: select_indices, check_event_alignment, scan_candidates,
+using LegendMachineLearning: select_indices, flag_coincident, scan_candidates,
     training_filekey, build_sample
+using Unitful
 using StableRNGs, PropDicts
 using LegendTestData
 using LegendDataManagement
@@ -70,14 +71,17 @@ using RadiationDetectorSignals: ArrayOfRDWaveforms
     @test_throws "not a column of the candidate table" select_indices(cand, 10; exclude=[:muon_veto], rng)
 end
 
-@testset "check_event_alignment" begin
-    fk = FileKey("l200-p03-r001-cal-20230318T012144Z")
-    eventnumber = [1, 2, 3, 4]
-    puls, bsln = DetectorId(:PULS01), DetectorId(:BSLN01)
-    @test check_event_alignment(fk, eventnumber, [puls => eventnumber, bsln => [1, 2, 3, 4]]) === nothing
-    @test check_event_alignment(fk, eventnumber, []) === nothing
-    @test_throws "l200-p03-r001-cal-20230318T012144Z" check_event_alignment(fk, eventnumber, [puls => [1, 2, 3]])
-    @test_throws "PULS01" check_event_alignment(fk, eventnumber, [puls => [1, 2, 3, 5], bsln => eventnumber])
+@testset "flag_coincident" begin
+    window = 125.0u"µs"
+    ts = [1.0, 2.0, 3.0, 4.0]u"s"
+    @test flag_coincident(ts, [2.0, 4.0]u"s", window) == [false, true, false, true]
+    # an aux trigger counts from either side of the row, and `ts` need not be sorted
+    @test flag_coincident([3.0, 1.0]u"s", [1.0 + 100e-6, 2.0 - 100e-6]u"s", window) == [false, true]
+    @test flag_coincident([2.0]u"s", [2.0 - 100e-6]u"s", window) == [true]
+    @test flag_coincident([1.0, 2.0]u"s", [1.0 + 200e-6]u"s", window) == [false, false]
+    @test flag_coincident(ts, typeof(1.0u"s")[], window) == fill(false, 4)
+    @test flag_coincident(typeof(1.0u"s")[], [1.0]u"s", window) == Bool[]
+    @test_throws "must be sorted" flag_coincident(ts, [4.0, 2.0]u"s", window)
 end
 
 @testset "build_sample on LegendTestData" begin

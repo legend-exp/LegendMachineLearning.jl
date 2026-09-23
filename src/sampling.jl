@@ -40,29 +40,37 @@ end
 export raw_filekeys
 
 """
-    check_event_alignment(filekey, eventnumber, aux_eventnumbers)
+    flag_coincident(ts, aux_ts, window) -> Vector{Bool}
 
-Assert that every `channel => eventnumber` pair of `aux_eventnumbers` lists
-the same DAQ events as `eventnumber`. Every FlashCam event is written to
-every channel of a raw file, so equal event-number vectors are what makes
-row `i` of an aux channel the same event as row `i` of the detector.
+True at each entry of `ts` that lies within `window` of some entry of
+`aux_ts`. `aux_ts` must be sorted, `ts` need not be.
 """
-function check_event_alignment(filekey, eventnumber, aux_eventnumbers)
-    misaligned = [ch for (ch, ev) in aux_eventnumbers if ev != eventnumber]
-    isempty(misaligned) && return nothing
-    throw(ArgumentError("$filekey: the event numbers of $(join(misaligned, ", ")) differ from those of the detector"))
+function flag_coincident(ts, aux_ts, window)
+    issorted(aux_ts) || throw(ArgumentError("aux_ts must be sorted"))
+    map(ts) do t
+        i = searchsortedfirst(aux_ts, t - window)
+        i ≤ lastindex(aux_ts) && aux_ts[i] ≤ t + window
+    end
 end
 
 """
-    scan_candidates(data, filekeys, det, aux_triggers) -> TypedTables.Table
+    scan_candidates(data, filekeys, det, aux_triggers; ts_window) -> TypedTables.Table
 
 Row scalars of every raw event of `det` in `filekeys`: `filekey`,
 `eventnumber`, `timestamp`, `daqenergy` and `baseline`, plus one `Bool`
 column per entry of `aux_triggers` (`name => DetectorId` pairs or a
-dictionary of them) that is true where that channel has `daqenergy > 0` in
-the same event, e.g. `:pulser => DetectorId(:PULS01)`.
+dictionary of them), e.g. `:pulser => DetectorId(:PULS01)`. A flag is true
+where that aux channel has a triggered event (`daqenergy > 0`) within
+`ts_window` of the row's timestamp, the same coincidence the hit tier uses
+to mark pulser events.
+
+Matching by time rather than by row works in both categories: a cal file
+stores only the channels that fired, so an aux channel there holds its own
+triggers and its own row count, while a phy file writes every DAQ event to
+every channel.
 """
-function scan_candidates(data::LegendData, filekeys::AbstractVector{FileKey}, det::DetectorId, aux_triggers)
+function scan_candidates(data::LegendData, filekeys::AbstractVector{FileKey}, det::DetectorId, aux_triggers;
+        ts_window::Unitful.Time=125u"µs")
     aux = collect(aux_triggers)
     flag_names = Symbol[Symbol(first(p)) for p in aux]
     allunique(flag_names) || throw(ArgumentError("aux trigger names must be unique, got $flag_names"))
@@ -75,16 +83,15 @@ function scan_candidates(data::LegendData, filekeys::AbstractVector{FileKey}, de
     flags = [Bool[] for _ in flag_names]
     for fk in filekeys
         t = read_ldata((:daqenergy, :baseline, :timestamp, :eventnumber), data, DataTier(:raw), fk, det)
-        aux_tables = [read_ldata((:daqenergy, :eventnumber), data, DataTier(:raw), fk, a) for a in aux_dets]
-        check_event_alignment(fk, t.eventnumber, [a => at.eventnumber for (a, at) in zip(aux_dets, aux_tables)])
+        for (flag, a) in zip(flags, aux_dets)
+            at = read_ldata((:daqenergy, :timestamp), data, DataTier(:raw), fk, a)
+            append!(flag, flag_coincident(t.timestamp, sort(at.timestamp[at.daqenergy .> 0]), ts_window))
+        end
         append!(filekey, Iterators.repeated(fk, length(t.eventnumber)))
         append!(eventnumber, t.eventnumber)
         append!(timestamp, t.timestamp)
         append!(daqenergy, t.daqenergy)
         append!(baseline, t.baseline)
-        for (flag, at) in zip(flags, aux_tables)
-            append!(flag, at.daqenergy .> 0)
-        end
     end
     Table(; filekey, eventnumber, timestamp, daqenergy, baseline,
         NamedTuple{Tuple(flag_names)}(Tuple(flags))...)
@@ -187,7 +194,7 @@ function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, r
     det, ch, det_type = row.detector, row.channel, row.det_type
     # `read_ldata` selects raw-tier channel groups by `DetectorId`, never `ChannelId`;
     # `ch` and `det_type` only ever fill the sample's columns below.
-    cand = scan_candidates(data, filekeys, det, strata.aux_triggers)
+    cand = scan_candidates(data, filekeys, det, strata.aux_triggers; strata.ts_window)
     nrows = length(cand)
     nrows > 0 || throw(ArgumentError("no raw events for $det in $(length(filekeys)) raw files"))
     nrows < n_det && @warn "detector $det: only $nrows rows in $(length(filekeys)) raw files, quota is $n_det"
@@ -220,8 +227,10 @@ contributes all of them and `@warn`s about the shortfall instead of
 silently returning fewer rows than the caller might expect.
 
 `config.strata` holds the selection parameters: `aux_triggers` maps flag
-names to the detector ids of the aux trigger channels, `exclude` lists the
-flags whose events stay out of the pool, and `zero_energy`, `high_energy`,
+names to the detector ids of the aux trigger channels, `ts_window` is the
+coincidence window in µs by which those channels' triggers are matched to
+the detector's events (125 when absent), `exclude` lists the flags whose
+events stay out of the pool, and `zero_energy`, `high_energy`,
 `high_energy_quantile`, `baseline_outlier` and `baseline_mad` parameterize
 the strata of `select_indices`. A key left out means no flags, nothing
 excluded, or an empty stratum.
@@ -248,7 +257,8 @@ function build_sample(data::LegendData, filekey::FileKey, config::PropDict;
         high_energy=Float64(get(sc, :high_energy, 0)),
         high_energy_quantile=Float64(get(sc, :high_energy_quantile, 0.9)),
         baseline_outlier=Float64(get(sc, :baseline_outlier, 0)),
-        baseline_mad=Float64(get(sc, :baseline_mad, 5)))
+        baseline_mad=Float64(get(sc, :baseline_mad, 5)),
+        ts_window=Float64(get(sc, :ts_window, 125)) * u"µs")
     rows = map(detectors) do det
         i = findfirst(==(det), chinfo.detector)
         isnothing(i) && throw(ArgumentError("detector $det not found in the channel map of $filekey"))
