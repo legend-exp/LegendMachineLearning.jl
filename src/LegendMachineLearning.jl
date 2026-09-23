@@ -9,7 +9,7 @@ module LegendMachineLearning
 
 using LinearAlgebra: diagind
 using Random: Random, AbstractRNG, shuffle
-using Statistics: mean, quantile
+using Statistics: mean, median, quantile
 using Dates: now
 using SHA: sha256
 

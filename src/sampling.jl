@@ -1,33 +1,6 @@
 # This file is a part of LegendMachineLearning.jl, licensed under the MIT License (MIT).
 
 """
-    select_indices(daqenergy, n; zero_energy_fraction, rng) -> Vector{Int}
-
-Sorted row indices, `length(sel) == min(n, length(daqenergy))`. Reserves
-`zero_energy_fraction * n` of them for rows with `daqenergy == 0` (events
-whose energy the DAQ could not reconstruct) and draws the rest uniformly
-without replacement from the other rows; that fraction is only a minimum
-when both strata are large enough to supply their share; a stratum too
-small for its share is capped at what it has, and the other stratum tops
-up to make `n` (or all of `daqenergy`, whichever is smaller).
-"""
-function select_indices(daqenergy::AbstractVector{<:Real}, n::Integer;
-        zero_energy_fraction::Real, rng::AbstractRNG=Random.default_rng())
-    0 ≤ zero_energy_fraction ≤ 1 || throw(ArgumentError("zero_energy_fraction must be between 0 and 1, got $zero_energy_fraction"))
-    n ≥ 0 || throw(ArgumentError("n must be non-negative, got $n"))
-    idx_all = collect(eachindex(daqenergy))
-    n ≥ length(idx_all) && return idx_all
-    zero_idx = filter(i -> iszero(daqenergy[i]), idx_all)
-    other_idx = filter(i -> !iszero(daqenergy[i]), idx_all)
-    n_zero = min(round(Int, zero_energy_fraction * n), length(zero_idx))
-    n_other = min(n - n_zero, length(other_idx))
-    n_zero = min(n - n_other, length(zero_idx))
-    sel = vcat(shuffle(rng, zero_idx)[1:n_zero], shuffle(rng, other_idx)[1:n_other])
-    sort!(sel)
-end
-export select_indices
-
-"""
     training_filekey(data, period, category) -> FileKey
 
 Start key of the first analysis run of `period` for `category`.
@@ -41,79 +14,248 @@ function training_filekey(data::LegendData, period::DataPeriod, category::DataCa
 end
 export training_filekey
 
-_read_raw(f, data::LegendData, sel...) = read_ldata(f, data, DataTier(:raw), sel...)
+"""
+    raw_filekeys(data, period, category) -> Vector{FileKey}
+
+Raw filekeys of every analysis run of `period` in `category`, in run order.
+A run that `runinfo` lists but whose raw directory is absent or empty is
+skipped with a warning; an empty result is an error.
+"""
+function raw_filekeys(data::LegendData, period::DataPeriod, category::DataCategory)
+    cat = Symbol(string(category))
+    filekeys = FileKey[]
+    for r in runinfo(data, period)
+        getproperty(r, cat).is_analysis_run || continue
+        dir = data.tier[DataTier(:raw), category, period, r.run]
+        run_filekeys = isdir(dir) ? search_disk(FileKey, dir) : FileKey[]
+        if isempty(run_filekeys)
+            @warn "no raw files for $period $(r.run) $category"
+            continue
+        end
+        append!(filekeys, run_filekeys)
+    end
+    isempty(filekeys) && throw(ArgumentError("period $period has no raw files in category $category"))
+    filekeys
+end
+export raw_filekeys
 
 """
-    _detector_sample(data, filekeys, row, n_det, n_files_max, zero_energy_fraction, waveform_column, rng) -> WaveformSample
+    check_event_alignment(filekey, eventnumber, aux_eventnumbers)
 
-`n_det` rows for the detector of `row`, selected by `select_indices` from
-the candidate rows of the first `n_files_max` entries of `filekeys` (in the
-given order). Warns and returns all candidate rows when there are fewer of
-them than `n_det`.
+Assert that every `channel => eventnumber` pair of `aux_eventnumbers` lists
+the same DAQ events as `eventnumber`. Every FlashCam event is written to
+every channel of a raw file, so equal event-number vectors are what makes
+row `i` of an aux channel the same event as row `i` of the detector.
+"""
+function check_event_alignment(filekey, eventnumber, aux_eventnumbers)
+    misaligned = [ch for (ch, ev) in aux_eventnumbers if ev != eventnumber]
+    isempty(misaligned) && return nothing
+    throw(ArgumentError("$filekey: the event numbers of $(join(misaligned, ", ")) differ from those of the detector"))
+end
+
+"""
+    scan_candidates(data, filekeys, det, aux_triggers) -> TypedTables.Table
+
+Row scalars of every raw event of `det` in `filekeys`: `filekey`,
+`eventnumber`, `timestamp`, `daqenergy` and `baseline`, plus one `Bool`
+column per entry of `aux_triggers` (`name => DetectorId` pairs or a
+dictionary of them) that is true where that channel has `daqenergy > 0` in
+the same event, e.g. `:pulser => DetectorId(:PULS01)`.
+"""
+function scan_candidates(data::LegendData, filekeys::AbstractVector{FileKey}, det::DetectorId, aux_triggers)
+    aux = collect(aux_triggers)
+    flag_names = Symbol[Symbol(first(p)) for p in aux]
+    allunique(flag_names) || throw(ArgumentError("aux trigger names must be unique, got $flag_names"))
+    aux_dets = DetectorId[DetectorId(last(p)) for p in aux]
+    filekey = FileKey[]
+    eventnumber = Int[]
+    timestamp = typeof(1.0u"s")[]
+    daqenergy = Float64[]
+    baseline = Float64[]
+    flags = [Bool[] for _ in flag_names]
+    for fk in filekeys
+        t = read_ldata((:daqenergy, :baseline, :timestamp, :eventnumber), data, DataTier(:raw), fk, det)
+        aux_tables = [read_ldata((:daqenergy, :eventnumber), data, DataTier(:raw), fk, a) for a in aux_dets]
+        check_event_alignment(fk, t.eventnumber, [a => at.eventnumber for (a, at) in zip(aux_dets, aux_tables)])
+        append!(filekey, Iterators.repeated(fk, length(t.eventnumber)))
+        append!(eventnumber, t.eventnumber)
+        append!(timestamp, t.timestamp)
+        append!(daqenergy, t.daqenergy)
+        append!(baseline, t.baseline)
+        for (flag, at) in zip(flags, aux_tables)
+            append!(flag, at.daqenergy .> 0)
+        end
+    end
+    Table(; filekey, eventnumber, timestamp, daqenergy, baseline,
+        NamedTuple{Tuple(flag_names)}(Tuple(flags))...)
+end
+export scan_candidates
+
+"""
+    select_indices(cand, n; exclude, zero_energy, high_energy, high_energy_quantile,
+                   baseline_outlier, baseline_mad, rng) -> (idx, stratum)
+
+Sorted row indices of the candidate table `cand` together with the name of
+the stratum each one was drawn by, `length(idx) == min(n, pool size)`. The
+pool holds the rows in which no flag column named by `exclude` is true;
+`cand` needs a `daqenergy` and a `baseline` column besides those.
+
+The strata are drawn in turn, without replacement and each one only from
+rows the earlier ones left: `:zero_energy` (`daqenergy == 0`),
+`:high_energy` (`daqenergy` at or above the `high_energy_quantile` quantile
+of the pool's triggered energies), `:baseline_outlier` (`baseline` further
+than `baseline_mad` times the pool's median absolute deviation from the
+pool's median baseline), and `:uniform` for the rest of `n` from the
+triggered rows. Each of the first three is capped at `round(Int, fraction *
+n)` rows, and at what the pool holds, so a stratum that runs short leaves
+its share to the later ones. Zero-energy rows labeled `:top_up` make up the
+count when the triggered rows run out.
+
+`n` at or above the pool size returns the whole pool, each row labeled by
+the first stratum rule it satisfies.
+"""
+function select_indices(cand, n::Integer;
+        exclude=Symbol[], zero_energy::Real=0, high_energy::Real=0,
+        high_energy_quantile::Real=0.9, baseline_outlier::Real=0, baseline_mad::Real=5,
+        rng::AbstractRNG=Random.default_rng())
+    n ≥ 0 || throw(ArgumentError("n must be non-negative, got $n"))
+    0 ≤ high_energy_quantile ≤ 1 ||
+        throw(ArgumentError("high_energy_quantile must be between 0 and 1, got $high_energy_quantile"))
+    fractions = (; zero_energy, high_energy, baseline_outlier)
+    for (name, f) in pairs(fractions)
+        0 ≤ f ≤ 1 || throw(ArgumentError("$name must be between 0 and 1, got $f"))
+    end
+    sum(fractions) ≤ 1 ||
+        throw(ArgumentError("the stratum fractions must sum to at most 1, got $(sum(fractions))"))
+    for name in exclude
+        name in propertynames(cand) ||
+            throw(ArgumentError("exclude names $name, which is not a column of the candidate table"))
+    end
+
+    e, bl = cand.daqenergy, cand.baseline
+    excluded = fill(false, axes(e))
+    for name in exclude
+        excluded .|= getproperty(cand, name)
+    end
+    pool = findall(!, excluded)
+    med = isempty(pool) ? zero(eltype(bl)) : median(bl[pool])
+    dev = isempty(pool) ? zero(eltype(bl)) : median(abs.(bl[pool] .- med))
+    triggered = [e[i] for i in pool if e[i] > 0]
+    # With no triggered row in the pool the high-energy stratum stays empty instead of
+    # matching every row.
+    threshold = isempty(triggered) ? Inf : quantile(triggered, high_energy_quantile)
+    rules = ((:zero_energy, i -> iszero(e[i]), round(Int, zero_energy * n)),
+        (:high_energy, i -> e[i] ≥ threshold, round(Int, high_energy * n)),
+        (:baseline_outlier, i -> abs(bl[i] - med) > baseline_mad * dev, round(Int, baseline_outlier * n)),
+        (:uniform, i -> e[i] > 0, n),
+        (:top_up, i -> iszero(e[i]), n))
+
+    if n ≥ length(pool)
+        return pool, map(pool) do i
+            k = findfirst(r -> r[2](i), rules)
+            isnothing(k) ? :uniform : rules[k][1]
+        end
+    end
+    idx = Int[]
+    stratum = Symbol[]
+    drawn = Set{Int}()
+    for (name, rule, quota) in rules
+        available = [i for i in pool if !(i in drawn) && rule(i)]
+        take = min(quota, length(available), n - length(idx))
+        for i in shuffle(rng, available)[1:take]
+            push!(drawn, i)
+            push!(idx, i)
+            push!(stratum, name)
+        end
+    end
+    perm = sortperm(idx)
+    idx[perm], stratum[perm]
+end
+export select_indices
+
+"""
+    _detector_sample(data, filekeys, row, n_det, strata, waveform_column, rng) -> WaveformSample
+
+`n_det` rows for the detector of `row`, drawn by `select_indices` from the
+candidate rows of `filekeys`. Warns and returns all candidate rows when
+there are fewer of them than `n_det`. The waveforms are read back from each
+file by the timestamps of the drawn rows, which is what ties them to those
+rows.
 """
 function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, row,
-        n_det::Integer, n_files_max::Integer, zero_energy_fraction::Real, waveform_column::Symbol, rng)
+        n_det::Integer, strata::NamedTuple, waveform_column::Symbol, rng)
     det, ch, det_type = row.detector, row.channel, row.det_type
     # `read_ldata` selects raw-tier channel groups by `DetectorId`, never `ChannelId`;
     # `ch` and `det_type` only ever fill the sample's columns below.
-    candidate_filekeys = first(filekeys, min(Int(n_files_max), length(filekeys)))
-    per_file = [_read_raw((:daqenergy, :eventnumber), data, fk, det) for fk in candidate_filekeys]
-    file_of_row = reduce(vcat, [fill(fk, length(t.daqenergy)) for (fk, t) in zip(candidate_filekeys, per_file)])
-    daqenergy = reduce(vcat, (t.daqenergy for t in per_file))
-    eventnumber = reduce(vcat, (t.eventnumber for t in per_file))
-    nrows = length(daqenergy)
-    nrows > 0 || throw(ArgumentError("no raw events for $det in the first $(length(candidate_filekeys)) raw files"))
-    nrows < n_det && @warn "detector $det: only $nrows rows in the first $(length(candidate_filekeys)) raw files, quota is $n_det"
-    sel = select_indices(daqenergy, n_det; zero_energy_fraction, rng)
-    sel_set = Set(sel)
-    parts = WaveformSample[]
-    for fk in unique(file_of_row[sel])
-        rows_fk = findall(==(fk), file_of_row)
-        local_sel = findall(in(sel_set), rows_fk)      # positions within this file
-        wv = _read_raw((waveform_column,), data, fk, det)
-        wvfs = getproperty(wv, waveform_column)[local_sel]
-        n = length(local_sel)
-        push!(parts, WaveformSample(wvfs, fill(fk, n), Int.(eventnumber[rows_fk[local_sel]]),
-            fill(ch, n), fill(det, n), fill(det_type, n), Float64.(daqenergy[rows_fk[local_sel]])))
+    cand = scan_candidates(data, filekeys, det, strata.aux_triggers)
+    nrows = length(cand)
+    nrows > 0 || throw(ArgumentError("no raw events for $det in $(length(filekeys)) raw files"))
+    nrows < n_det && @warn "detector $det: only $nrows rows in $(length(filekeys)) raw files, quota is $n_det"
+    idx, stratum = select_indices(cand, n_det; strata.exclude, strata.zero_energy, strata.high_energy,
+        strata.high_energy_quantile, strata.baseline_outlier, strata.baseline_mad, rng)
+    isempty(idx) && throw(ArgumentError("no candidate rows left for $det after excluding $(strata.exclude)"))
+    files = cand.filekey[idx]
+    parts = map(unique(files)) do fk
+        rows = findall(==(fk), files)
+        timestamp = cand.timestamp[idx[rows]]
+        wf = read_ldata((waveform_column, :timestamp), data, (DataTier(:raw), fk, timestamp, det))
+        wf.timestamp == timestamp ||
+            throw(ErrorException("the waveforms read from $fk for $det do not carry the timestamps they were selected by"))
+        n = length(rows)
+        WaveformSample(getproperty(wf, waveform_column), files[rows], cand.eventnumber[idx[rows]],
+            fill(ch, n), fill(det, n), fill(det_type, n), cand.daqenergy[idx[rows]],
+            cand.baseline[idx[rows]], timestamp, stratum[rows])
     end
     vcat(parts...)
 end
 
 """
-    build_sample(data, filekey, config; rng, chinfo) -> WaveformSample
+    build_sample(data, filekey, config; rng, chinfo, filekeys) -> WaveformSample
 
-Sample for the run of `filekey`: `config.n_max` waveforms split equally over
-`config.detectors`, each selected by `select_indices` on `daqenergy` with
-`config.strata.zero_energy_fraction`, read from `config.waveform_column`.
-For each detector, the candidate rows are restricted to the first
-`config.n_files_max` raw files (by `search_disk` order) before selection, so
-every selected row comes from one of those files; a detector whose candidate
-rows fall short of its share of `config.n_max` contributes all of them and
-`@warn`s about the shortfall instead of silently returning fewer rows than
-the caller might expect from a run-wide draw.
+Sample for the period and category of `filekey`: `config.n_max` waveforms
+split equally over `config.detectors`, each drawn by `select_indices` from
+the candidate rows of `filekeys` and read from `config.waveform_column`.
+A detector whose candidate rows fall short of its share of `config.n_max`
+contributes all of them and `@warn`s about the shortfall instead of
+silently returning fewer rows than the caller might expect.
 
-`chinfo` supplies the `detector`, `channel` and `det_type` columns used to
-look up each entry of `config.detectors`; it defaults to the full channel
-map of `filekey`. Pass any other table with those three columns to run
-without a channel map, e.g. a hand-built `TypedTables.Table` against raw
-files that predate or lack channel-map coverage.
+`config.strata` holds the selection parameters: `aux_triggers` maps flag
+names to the detector ids of the aux trigger channels, `exclude` lists the
+flags whose events stay out of the pool, and `zero_energy`, `high_energy`,
+`high_energy_quantile`, `baseline_outlier` and `baseline_mad` parameterize
+the strata of `select_indices`. A key left out means no flags, nothing
+excluded, or an empty stratum.
+
+`filekeys` defaults to the raw files of every analysis run of the period, so
+rows may come from any run of it; `filekey` itself only names the period and
+the category. `chinfo` supplies the `detector`, `channel` and `det_type`
+columns used to look up each entry of `config.detectors`; it defaults to the
+full channel map of `filekey`. Pass any other table with those three columns
+to run without a channel map, e.g. a hand-built `TypedTables.Table` against
+raw files that predate or lack channel-map coverage.
 """
 function build_sample(data::LegendData, filekey::FileKey, config::PropDict;
-        rng::AbstractRNG=Random.default_rng(), chinfo=channelinfo(data, filekey; system=:geds))
+        rng::AbstractRNG=Random.default_rng(), chinfo=channelinfo(data, filekey; system=:geds),
+        filekeys::AbstractVector{FileKey}=raw_filekeys(data, filekey.period, filekey.category))
     detectors = DetectorId.(config.detectors)
     isempty(detectors) && throw(ArgumentError("config.detectors is empty"))
+    isempty(filekeys) && throw(ArgumentError("no raw files for $(filekey.period) $(filekey.category)"))
     n_det = cld(Int(config.n_max), length(detectors))
-    dir = data.tier[DataTier(:raw), filekey.category, filekey.period, filekey.run]
-    isdir(dir) || throw(ArgumentError("no raw files for $(filekey.period) $(filekey.run) $(filekey.category)"))
-    filekeys = search_disk(FileKey, dir)
-    isempty(filekeys) && throw(ArgumentError("no raw files for $(filekey.period) $(filekey.run) $(filekey.category)"))
+    sc = config.strata
+    strata = (aux_triggers=[Symbol(k) => DetectorId(string(v)) for (k, v) in get(sc, :aux_triggers, PropDict())],
+        exclude=Symbol.(get(sc, :exclude, Symbol[])),
+        zero_energy=Float64(get(sc, :zero_energy, 0)),
+        high_energy=Float64(get(sc, :high_energy, 0)),
+        high_energy_quantile=Float64(get(sc, :high_energy_quantile, 0.9)),
+        baseline_outlier=Float64(get(sc, :baseline_outlier, 0)),
+        baseline_mad=Float64(get(sc, :baseline_mad, 5)))
     rows = map(detectors) do det
         i = findfirst(==(det), chinfo.detector)
         isnothing(i) && throw(ArgumentError("detector $det not found in the channel map of $filekey"))
         chinfo[i]
     end
-    parts = [_detector_sample(data, filekeys, row, n_det, Int(config.n_files_max),
-        Float64(config.strata.zero_energy_fraction), Symbol(config.waveform_column), rng) for row in rows]
+    parts = [_detector_sample(data, filekeys, row, n_det, strata, Symbol(config.waveform_column), rng)
+             for row in rows]
     vcat(parts...)
 end
 export build_sample
