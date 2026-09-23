@@ -46,6 +46,9 @@ function run_qc_sampling(data::LegendData, training_fk::FileKey, config::PropDic
         :runs => unique(string(fk.run) for fk in filekeys), :strata => config.strata,
         :n_per_stratum => PropDict((s => count(==(s), sample.stratum) for s in sort(unique(sample.stratum)))...),
         :sample_sha256 => file_sha256(path))
+    # The entry carries the extractor settings so that the labeling notebook computes the
+    # same features as the clustering did.
+    pars.features = config.features
     pars.affinity_propagation = cluster_result_to_props(cluster)
     pars.affinity_propagation.scan = PropDict(:damp => scan.damp, :preference_quantile => scan.preference_quantile,
         :preference => scan.preference, :n_clusters => _grid_rows(scan.n_clusters), :converged => _grid_rows(scan.converged),
