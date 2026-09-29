@@ -59,15 +59,19 @@ end
 export load_model
 
 """
-    write_sample(path, s::WaveformSample, c::ClusterResult)
+    write_sample(path, s::WaveformSample, c::ClusterResult; stats=nothing)
 
-LH5 layout: table `sample` and arrays `clustering/assignment`, `clustering/exemplars`.
-Identifiers and stratum names are stored as strings; hyperparameters and
-convergence go to the parameter database (see `cluster_result_to_props`).
+LH5 layout: table `sample` and arrays `clustering/assignment`, `clustering/exemplars`,
+and, when `stats` is given, the table `stats` with one row per sample row (e.g.
+the rule inputs `build_sample` returns). Identifiers and stratum names are stored
+as strings; hyperparameters and convergence go to the parameter database (see
+`cluster_result_to_props`).
 """
-function write_sample(path::AbstractString, s::WaveformSample, c::ClusterResult)
+function write_sample(path::AbstractString, s::WaveformSample, c::ClusterResult; stats=nothing)
     length(c.assignment) == length(s) ||
         throw(DimensionMismatch("$(length(c.assignment)) cluster assignments for $(length(s)) sample rows"))
+    isnothing(stats) || length(stats) == length(s) ||
+        throw(DimensionMismatch("$(length(stats)) stats rows for $(length(s)) sample rows"))
     _atomic_write(path) do tmp
         lh5open(tmp, "w") do f
             f["sample"] = Table(waveform=s.waveform, filekey=string.(s.filekey), eventnumber=s.eventnumber,
@@ -76,6 +80,7 @@ function write_sample(path::AbstractString, s::WaveformSample, c::ClusterResult)
                 stratum=String.(s.stratum))
             f["clustering/assignment"] = c.assignment
             f["clustering/exemplars"] = c.exemplars
+            isnothing(stats) || (f["stats"] = stats)
         end
     end
     nothing
@@ -83,7 +88,9 @@ end
 export write_sample
 
 """
-    read_sample(path) -> (sample, assignment, exemplars)
+    read_sample(path) -> (sample, assignment, exemplars, stats)
+
+`stats` is the table written with the sample, or `nothing` for a file without one.
 """
 function read_sample(path::AbstractString)
     isfile(path) || throw(ArgumentError("sample file $path does not exist"))
@@ -92,7 +99,8 @@ function read_sample(path::AbstractString)
         s = WaveformSample(t.waveform, FileKey.(t.filekey), Int.(t.eventnumber), ChannelId.(t.channel),
             DetectorId.(t.detector), Symbol.(t.det_type), Float64.(t.daqenergy), Float64.(t.baseline),
             collect(typeof(1.0u"s"), t.timestamp), Symbol.(t.stratum))
-        s, Int.(f["clustering/assignment"][:]), Int.(f["clustering/exemplars"][:])
+        stats = haskey(f, "stats") ? f["stats"][:] : nothing
+        s, Int.(f["clustering/assignment"][:]), Int.(f["clustering/exemplars"][:]), stats
     end
 end
 export read_sample

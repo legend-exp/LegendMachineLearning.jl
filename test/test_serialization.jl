@@ -8,6 +8,7 @@ using PropDicts, StableRNGs, Unitful, IntervalSets
 using RadiationDetectorSignals
 using LegendDataManagement: FileKey, ChannelId, DetectorId
 using LegendHDF5IO
+using TypedTables: Table
 
 svm_cfg() = PropDict(:cost => PropDict(:min => 0.1, :max => 10.0, :n => 2),
     :gamma => PropDict(:min => 0.01, :max => 1.0, :n => 2), :n_folds => 3, :probability => false)
@@ -45,8 +46,16 @@ end
         [1, 1, 2], [1, 3], true, 42)
     mktempdir() do dir
         path = joinpath(dir, "sample.lh5")
-        write_sample(path, s, c)
-        s2, assignment, exemplars = read_sample(path)
+        stats = Table(tail_tau=[400.0, NaN, -12.5]u"µs", t50=[48.0, 47.5, 60.0]u"µs", n_triggers=[1, 0, 2],
+            baseline_dev=[0.3, Inf, 7.5])
+        write_sample(path, s, c; stats)
+        s2, assignment, exemplars, stats2 = read_sample(path)
+        @test isequal(collect(stats2.tail_tau), collect(stats.tail_tau))
+        @test stats2.t50 == stats.t50 && stats2.n_triggers == stats.n_triggers
+        @test stats2.baseline_dev == stats.baseline_dev
+        @test_throws DimensionMismatch write_sample(joinpath(dir, "bad.lh5"), s, c; stats=stats[1:2])
+        write_sample(joinpath(dir, "plain.lh5"), s, c)
+        @test isnothing(last(read_sample(joinpath(dir, "plain.lh5"))))
         @test length(s2) == 3
         @test s2.waveform isa ArrayOfRDWaveforms
         @test all(s2.waveform[i].signal == wf(i).signal for i in 1:3)
