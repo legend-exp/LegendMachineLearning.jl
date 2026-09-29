@@ -19,11 +19,11 @@ using Lux: Lux
 using ADTypes: ADTypes, AbstractADType
 import DifferentiationInterface as DI
 
-using Unitful: Unitful, @u_str
+using Unitful: Unitful, @u_str, uconvert, ustrip
 using IntervalSets: ClosedInterval, leftendpoint, rightendpoint, (..)
 using ArraysOfArrays: flatview, VectorOfSimilarArrays
 using RadiationDetectorSignals: RDWaveform, ArrayOfRDWaveforms
-using RadiationDetectorDSP: signalstats, shift_waveform, multiply_waveform
+using RadiationDetectorDSP: signalstats, shift_waveform, multiply_waveform, Intersect, TrapezoidalChargeFilter
 using LegendDSP: HaarAveragingFilter
 using Distances: SemiMetric, Cityblock, pairwise
 using CategoricalArrays: categorical, unwrap
@@ -47,6 +47,7 @@ include("labels.jl")
 include("clustering.jl")
 include("training.jl")
 include("serialization.jl")
+include("waveform_stats.jl")
 include("sampling.jl")
 include("legend_io.jl")
 include("pipeline.jl")

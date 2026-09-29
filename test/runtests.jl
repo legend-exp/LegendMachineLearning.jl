@@ -11,6 +11,7 @@ Test.@testset verbose=true "Package LegendMachineLearning" begin
     include("test_clustering.jl")
     include("test_training.jl")
     include("test_serialization.jl")
+    include("test_waveform_stats.jl")
     include("test_sampling.jl")
     include("test_legend_io.jl")
     include("test_pipeline.jl")
