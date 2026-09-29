@@ -36,9 +36,9 @@ using MLJLIBSVMInterface: SVC, ProbabilisticSVC
 using StatisticalMeasures: balanced_accuracy
 using JLD2: jldsave, jldopen
 using PropDicts: PropDict
-using TypedTables: Table
+using TypedTables: Table, columns
 using LegendDataManagement: LegendDataManagement, LegendData, FileKey, DataPeriod, DataCategory,
-    ChannelId, DetectorId, DataTier, runinfo, channelinfo, read_ldata, search_disk
+    ChannelId, DetectorId, DataTier, runinfo, channelinfo, read_ldata, search_disk, ljl_propfunc
 using LegendHDF5IO: lh5open
 
 include("types.jl")

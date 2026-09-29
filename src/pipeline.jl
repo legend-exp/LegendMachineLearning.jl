@@ -20,15 +20,18 @@ _grid_rows(m::AbstractMatrix) = [collect(r) for r in eachrow(m)]
 
 Build the training sample of the period and category of `training_fk` from
 the raw files `filekeys`, scan and fit affinity propagation, write the
-`jlqml` sample file, and return the parameter entry (with
-`exemplar_labels` initialized to `UNLABELED`) and the scan report. `kwargs`
-are forwarded to `build_sample` (e.g. `chinfo` to run without a channel
-map).
+`jlqml` sample file (with the rule inputs of the sample rows as its `stats`
+table), and return the parameter entry (with `exemplar_labels` initialized to
+`UNLABELED`) and the scan report. The entry's `sample` section records, per
+detector, the number of scan rows (`n_scan`) and how many of them each rule
+selects (`n_matched`). `kwargs` are forwarded to `build_sample` (e.g. `chinfo`
+to run without a channel map).
 """
 function run_qc_sampling(data::LegendData, training_fk::FileKey, config::PropDict;
         rng::AbstractRNG=Random.default_rng(),
         filekeys::AbstractVector{FileKey}=raw_filekeys(data, training_fk.period, training_fk.category), kwargs...)
-    sample = build_sample(data, training_fk, config; rng, filekeys, kwargs...)
+    drawn = build_sample(data, training_fk, config; rng, filekeys, kwargs...)
+    sample = drawn.sample
     X = features(features_config(config), sample.waveform)
     ap = config.affinity_propagation
     damp = collect(range(Float64(ap.damp.min), Float64(ap.damp.max), length=Int(ap.damp.n)))
@@ -39,12 +42,13 @@ function run_qc_sampling(data::LegendData, training_fk::FileKey, config::PropDic
         preference_quantile=pq[scan.best.i_preference], maxiter=Int(ap.maxiter), tol=Float64(ap.tol), S=scan.S)
     path = qc_sample_filename(data, training_fk)
     mkpath(dirname(path))
-    write_sample(path, sample, cluster)
+    write_sample(path, sample, cluster; drawn.stats)
     pars = PropDict()
     pars.sample = PropDict(:n => length(sample), :detectors => string.(config.detectors),
         :waveform_column => string(config.waveform_column), :n_files => length(filekeys),
         :runs => unique(string(fk.run) for fk in filekeys), :strata => config.strata,
         :n_per_stratum => PropDict((s => count(==(s), sample.stratum) for s in sort(unique(sample.stratum)))...),
+        :n_scan => drawn.n_scan, :n_matched => drawn.n_matched,
         :sample_sha256 => file_sha256(path))
     # The entry carries the extractor settings so that the labeling notebook computes the
     # same features as the clustering did.
