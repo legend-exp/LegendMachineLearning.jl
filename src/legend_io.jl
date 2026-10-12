@@ -33,6 +33,19 @@ qc_pars_entry_name(fk::FileKey) = "$(fk.period)/$(fk.run)-$(fk.category).yaml"
 export qc_pars_entry_name
 
 """
+    qc_ml_config(data, fk) -> PropDict
+
+QC machine-learning config valid for `fk`, the `ml` section of
+`dataprod_config(data).qc(fk)`. Throws when that section is absent.
+"""
+function qc_ml_config(data::LegendData, fk::FileKey)
+    qc = dataprod_config(data).qc(fk)
+    haskey(qc, :ml) || throw(ArgumentError("dataprod_config(data).qc($fk) has no ml section"))
+    qc.ml
+end
+export qc_ml_config
+
+"""
     qc_ml_pars(data, filekey) -> Union{PropDict, Nothing}
 
 Parameter entry of the QC model valid for `filekey` (`rpars.ml`), resolved
