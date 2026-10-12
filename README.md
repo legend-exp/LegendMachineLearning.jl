@@ -59,3 +59,58 @@ strata:
 
 `pars_entry` is what the processor writes to `rpars.ml`, together with a
 validity entry for the training run.
+
+## The `legend-qcml` app
+
+`apps/LegendMLApps` is a separate package that serves a Pluto notebook for the
+labeling, training and check steps: it reads the sample and the `rpars.ml` entry
+of a period and category, lets you label the cluster exemplars and save them to
+the entry, trains the SVM (model file next to the sample, entry and validity
+updated), and classifies the raw events of any file of the period with the
+stored model. It needs Julia 1.12 or later.
+
+Install it from a checkout of this repository, so that changes to the checkout
+take effect without reinstalling:
+
+```
+pkg> app develop path/to/LegendMachineLearning/apps/LegendMLApps
+```
+
+or from GitHub:
+
+```julia
+using Pkg
+Pkg.Apps.add(url="https://github.com/legend-exp/LegendMachineLearning.jl", subdir="apps/LegendMLApps")
+```
+
+The app is installed as `~/.julia/bin/legend-qcml` (`$JULIA_DEPOT_PATH/bin` with a
+non-default depot); put that directory on your `PATH`, e.g. in `~/.zshrc`:
+
+```sh
+export PATH="$HOME/.julia/bin:$PATH"
+```
+
+Usage:
+
+```
+legend-qcml [--config PATH] [--period PERIOD] [--category CATEGORY] [--port PORT] [--host HOST]
+
+  --config PATH        LEGEND data config (default: $LEGEND_DATA_CONFIG)
+  --period PERIOD      period selected at start, e.g. p18 (default: the last period with an entry)
+  --category CATEGORY  cal or phy (default: cal)
+  --port PORT          port of the Pluto server (default: 10004)
+  --host HOST          address the server listens on (default: 127.0.0.1)
+```
+
+The app stops with an error when the config is missing or the period has no
+entry. It runs Julia with 8 threads; `legend-qcml --threads=4 -- --period p18`
+overrides that. To work on a remote machine, start the app there (e.g. in a
+`tmux` session) and forward the port from your own machine:
+
+```sh
+ssh cslg4                       # then, on cslg4:
+legend-qcml --period p18 --category cal
+ssh -L 10004:localhost:10004 cslg4   # on your own machine
+```
+
+and open <http://localhost:10004/> in the browser.

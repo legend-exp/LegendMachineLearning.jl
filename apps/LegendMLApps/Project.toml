@@ -1,0 +1,60 @@
+name = "LegendMLApps"
+uuid = "3c7f93e9-ea61-4a0b-8db4-9253dc292af8"
+version = "0.1.0"
+
+[deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+HypertextLiteral = "ac1192a8-f4b3-4bfe-ba22-af5b92cd3ab2"
+InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
+IntervalSets = "8197267c-284f-5f27-9208-e0e47529a953"
+LegendDataManagement = "9feedd95-f0e0-423f-a8dc-de0970eae6b3"
+LegendHDF5IO = "c9265ca6-b027-5446-b1a4-febfa8dd10b0"
+LegendMachineLearning = "680c0e5c-e19a-4618-a40a-6a4bd0d2e8fd"
+LegendMakie = "ce9a434a-d062-4f11-9371-3059ddb1c48a"
+Markdown = "d6f4376e-aef5-505a-96c1-9c027394607a"
+Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+Pluto = "c3e4b0f8-55cb-11ea-2926-15256bba5781"
+PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
+PropDicts = "4dc08600-4268-439e-8673-d706fafbb426"
+RadiationDetectorSignals = "bf2c0563-65cf-5db2-a620-ceb7de82658c"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+TypedTables = "9d95f2ec-7b3d-5a63-8d20-e2491e220bb9"
+Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+
+[sources]
+LegendMachineLearning = {path = "../.."}
+
+[compat]
+CairoMakie = "0.15"
+Dates = "1"
+HypertextLiteral = "0.9, 1"
+InteractiveUtils = "1"
+IntervalSets = "0.7"
+LegendDataManagement = "0.6.14"
+LegendHDF5IO = "0.1"
+LegendMachineLearning = "0.1"
+LegendMakie = "0.2.3"
+Markdown = "1"
+Pkg = "1"
+Pluto = "1"
+PlutoUI = "0.7.60"
+PropDicts = "0.3.1"
+RadiationDetectorSignals = "0.3"
+Random = "1"
+Statistics = "1"
+Test = "1"
+TypedTables = "1"
+Unitful = "1"
+julia = "1.12"
+
+[apps.legend-qcml]
+julia_flags = ["--threads=8"]
+submodule = "QCML"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
