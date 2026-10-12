@@ -3,7 +3,8 @@
 using Test
 using LegendMachineLearning
 using LegendMachineLearning: qc_model_filename, qc_pars_entry_name, model_pars_entry, load_qc_model,
-    qc_sample_filename, qc_ml_pars, qc_ml_config, train_svm, save_model, HaarFeatures
+    qc_sample_filename, qc_ml_pars, qc_ml_config, qc_pars_entry_path, qc_ml_periods, train_svm, save_model,
+    HaarFeatures
 using LegendTestData, LegendDataManagement, PropDicts, StableRNGs, Unitful, IntervalSets
 using LegendDataManagement: writelprops
 using LegendDataManagement.LDMUtils: writevalidity
@@ -136,6 +137,30 @@ end
             @test ml.n_max == 10 && qc_categories(ml) == Dict(0 => :normal)
             @test_throws "l200-p18-r000-cal-20251107T191821Z) has no ml section" qc_ml_config(l200,
                 FileKey("l200-p18-r000-cal-20251107T191821Z"))
+        end
+    end
+end
+
+@testset "qc_pars_entry_path and qc_ml_periods" begin
+    mktempdir() do dir
+        cfg_path = joinpath(dir, "config.json")
+        write(cfg_path, """{"setups": {"l200": {"paths": {"tier": "$(joinpath(dir, "tier"))", "par": "$(joinpath(dir, "par"))", "metadata": "$(joinpath(dir, "metadata"))"}}}}""")
+        withenv("LEGEND_DATA_CONFIG" => cfg_path) do
+            l200 = LegendData(:l200)
+            mkpath(joinpath(dir, "par"))
+            # no rpars/ml directory
+            @test qc_ml_periods(l200, :cal) == DataPeriod[]
+            fk = FileKey("l200-p18-r000-cal-20251107T191821Z")
+            @test qc_pars_entry_path(l200, fk) == joinpath(dir, "par", "rpars", "ml", "p18", "r000-cal.yaml")
+            for name in ("p18/r000-cal.yaml", "p03/r001-cal.yaml", "p04/r000-phy.yaml", "p05/notes.txt")
+                path = joinpath(dir, "par", "rpars", "ml", name)
+                mkpath(dirname(path))
+                write(path, "{}\n")
+            end
+            # validity.yaml next to the period directories is not a period
+            write(joinpath(dir, "par", "rpars", "ml", "validity.yaml"), "[]\n")
+            @test qc_ml_periods(l200, :cal) == DataPeriod.(["p03", "p18"])
+            @test qc_ml_periods(l200, DataCategory(:phy)) == [DataPeriod("p04")]
         end
     end
 end

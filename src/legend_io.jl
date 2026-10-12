@@ -33,6 +33,33 @@ qc_pars_entry_name(fk::FileKey) = "$(fk.period)/$(fk.run)-$(fk.category).yaml"
 export qc_pars_entry_name
 
 """
+    qc_pars_entry_path(data, fk) -> String
+
+File of the `rpars.ml` entry of `fk` in the primary parameter directory of
+`data`, the one entries are written to.
+"""
+qc_pars_entry_path(data::LegendData, fk::FileKey) = joinpath(data_path(data.par), "rpars", "ml", qc_pars_entry_name(fk))
+export qc_pars_entry_path
+
+"""
+    qc_ml_periods(data, category) -> Vector{DataPeriod}
+
+Periods, in order, with at least one `rpars.ml` entry of `category` in the
+primary parameter directory of `data` (see `qc_pars_entry_path`). Empty when
+that directory has no `rpars/ml`.
+"""
+function qc_ml_periods(data::LegendData, category)
+    category = DataCategory(category)
+    ml_dir = joinpath(data_path(data.par), "rpars", "ml")
+    isdir(ml_dir) || return DataPeriod[]
+    entry = Regex("^r\\d+-$(category)\\.yaml\$")
+    periods = [DataPeriod(d) for d in readdir(ml_dir) if occursin(r"^p\d+$", d) &&
+        isdir(joinpath(ml_dir, d)) && any(f -> occursin(entry, f), readdir(joinpath(ml_dir, d)))]
+    sort(periods)
+end
+export qc_ml_periods
+
+"""
     qc_ml_config(data, fk) -> PropDict
 
 QC machine-learning config valid for `fk`, the `ml` section of
