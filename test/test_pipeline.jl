@@ -102,7 +102,7 @@ end
     svm_cfg = PropDict(:cost => PropDict(:min => 1.0, :max => 1.0, :n => 1),
         :gamma => PropDict(:min => 0.01, :max => 0.01, :n => 1), :n_folds => 3, :probability => true)
     mach, _ = train_svm(X, y, svm_cfg; rng)
-    model = LegendMLModel(mach, HaarFeatures(n_samples=196, bl_window=0.0u"µs"..39.0u"µs"),
+    model = LegendMLModel(mach, HaarFeatures(n_samples = 196, bl_window = 0.0u"µs"..39.0u"µs"),
         Dict(0 => :normal, 3 => :other), PropDict(:labels => y))
     withenv("LEGEND_DATA_CONFIG" => joinpath(legend_test_data_path(), "data", "lh5", "prod-ref-l200", "config.json")) do
         l200 = LegendData(:l200)
@@ -110,7 +110,7 @@ end
         det = DetectorId(:V97061A)
         raw = read_ldata((:eventnumber, :timestamp, :daqenergy, :waveform_presummed), l200, DataTier(:raw), fk, det)
 
-        t = classify_filekey(l200, fk, model; detectors=["V97061A"])
+        t = classify_filekey(l200, fk, model; detectors = ["V97061A"])
         @test propertynames(t) == (:detector, :eventnumber, :timestamp, :daqenergy, :waveform, :label, :margin)
         @test t.eventnumber == raw.eventnumber && t.timestamp == raw.timestamp && t.daqenergy == raw.daqenergy
         @test all(==(det), t.detector)
@@ -121,13 +121,13 @@ end
         @test all(in((0, 3)), t.label) && all(m -> 0.5 ≤ m ≤ 1, t.margin)
 
         # one block per detector entry; the cap draws a sorted subset of the events of the file
-        t2 = classify_filekey(l200, fk, model; detectors=[det, det], n_max_per_detector=4, rng=StableRNG(1))
+        t2 = classify_filekey(l200, fk, model; detectors = [det, det], n_max_per_detector = 4, rng = StableRNG(1))
         @test length(t2) == 8
         first4 = t2.eventnumber[1:4]
         @test issorted(first4) && first4 ⊆ raw.eventnumber
         @test t2.waveform.signal[1:4] == decoded.signal[findall(in(first4), raw.eventnumber)]
 
-        @test_throws "not an aux trigger" classify_filekey(l200, fk, model; detectors=[det], exclude=[:pulser])
-        @test_throws "detectors is empty" classify_filekey(l200, fk, model; detectors=String[])
+        @test_throws "not an aux trigger" classify_filekey(l200, fk, model; detectors = [det], exclude = [:pulser])
+        @test_throws "detectors is empty" classify_filekey(l200, fk, model; detectors = String[])
     end
 end

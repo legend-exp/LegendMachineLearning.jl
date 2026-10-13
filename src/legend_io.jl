@@ -53,9 +53,11 @@ function qc_ml_periods(data::LegendData, category)
     ml_dir = joinpath(data_path(data.par), "rpars", "ml")
     isdir(ml_dir) || return DataPeriod[]
     entry = Regex("^r\\d+-$(category)\\.yaml\$")
-    periods = [DataPeriod(d) for d in readdir(ml_dir) if occursin(r"^p\d+$", d) &&
-        isdir(joinpath(ml_dir, d)) && any(f -> occursin(entry, f), readdir(joinpath(ml_dir, d)))]
-    sort(periods)
+    periods = [
+        DataPeriod(d) for d in readdir(ml_dir) if occursin(r"^p\d+$", d) &&
+            isdir(joinpath(ml_dir, d)) && any(f -> occursin(entry, f), readdir(joinpath(ml_dir, d)))
+    ]
+    return sort(periods)
 end
 export qc_ml_periods
 
@@ -68,7 +70,7 @@ QC machine-learning config valid for `fk`, the `ml` section of
 function qc_ml_config(data::LegendData, fk::FileKey)
     qc = dataprod_config(data).qc(fk)
     haskey(qc, :ml) || throw(ArgumentError("dataprod_config(data).qc($fk) has no ml section"))
-    qc.ml
+    return qc.ml
 end
 export qc_ml_config
 

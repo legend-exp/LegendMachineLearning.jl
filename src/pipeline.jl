@@ -138,9 +138,9 @@ uniformly with `rng`, in file order. The waveforms are read from the raw
 column `waveform_column`.
 """
 function classify_filekey(data::LegendData, fk::FileKey, model::LegendMLModel; detectors,
-        aux_triggers=PropDict(), exclude=Symbol[], ts_window::Unitful.Time=125u"µs",
-        n_max_per_detector::Integer=typemax(Int), waveform_column::Symbol=:waveform_presummed,
-        rng::AbstractRNG=Random.default_rng())
+    aux_triggers = PropDict(), exclude = Symbol[], ts_window::Unitful.Time = 125u"µs",
+    n_max_per_detector::Integer = typemax(Int), waveform_column::Symbol = :waveform_presummed,
+    rng::AbstractRNG = Random.default_rng())
     aux = [Symbol(k) => DetectorId(string(v)) for (k, v) in aux_triggers]
     isempty(detectors) && throw(ArgumentError("detectors is empty"))
     excluded_names = Symbol.(exclude)
@@ -159,11 +159,13 @@ function classify_filekey(data::LegendData, fk::FileKey, model::LegendMLModel; d
         # element access would decode the full trace per sample.
         wvfs = [RDWaveform(w.time, Vector(w.signal)) for w in getproperty(raw, waveform_column)[rows]]
         label, margin = predict_with_margin(model, wvfs)
-        (detector=fill(det, length(rows)), eventnumber=cand.eventnumber[rows], timestamp=cand.timestamp[rows],
-            daqenergy=cand.daqenergy[rows], waveform=wvfs, label, margin)
+        return (detector = fill(det, length(rows)), eventnumber = cand.eventnumber[rows],
+            timestamp = cand.timestamp[rows],
+            daqenergy = cand.daqenergy[rows], waveform = wvfs, label, margin)
     end
     col(name) = reduce(vcat, [getproperty(p, name) for p in parts])
-    Table(detector=col(:detector), eventnumber=col(:eventnumber), timestamp=col(:timestamp),
-        daqenergy=col(:daqenergy), waveform=ArrayOfRDWaveforms(col(:waveform)), label=col(:label), margin=col(:margin))
+    return Table(detector = col(:detector), eventnumber = col(:eventnumber), timestamp = col(:timestamp),
+        daqenergy = col(:daqenergy), waveform = ArrayOfRDWaveforms(col(:waveform)), label = col(:label),
+        margin = col(:margin))
 end
 export classify_filekey

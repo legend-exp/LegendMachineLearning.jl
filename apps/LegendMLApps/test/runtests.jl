@@ -13,9 +13,10 @@ using LegendMLApps.QCML: parse_args, NOTEBOOK
 
         @testset "defaults and values" begin
             o = parse_args(["--config", config], noenv)
-            @test o == (; help=false, config, period=nothing, category="cal", port=10004, host="127.0.0.1")
-            o = parse_args(["--config=$config", "--period", "p18", "--category=phy", "--port", "10010",
-                "--host", "0.0.0.0"], noenv)
+            @test o == (; help = false, config, period = nothing, category = "cal", port = 10004, host = "127.0.0.1")
+            o = parse_args(
+                ["--config=$config", "--period", "p18", "--category=phy", "--port", "10010",
+                    "--host", "0.0.0.0"], noenv)
             @test (o.period, o.category, o.port, o.host) == ("p18", "phy", 10010, "0.0.0.0")
             # the config falls back to LEGEND_DATA_CONFIG
             @test parse_args(String[], Dict("LEGEND_DATA_CONFIG" => config)).config == config
