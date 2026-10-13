@@ -11,3 +11,51 @@
 
 * [Documentation for stable version](https://legend-exp.github.io/LegendMachineLearning.jl/stable)
 * [Documentation for development version](https://legend-exp.github.io/LegendMachineLearning.jl/dev)
+
+## QC classification pipeline
+
+```julia
+using LegendMachineLearning, LegendDataManagement
+
+l200 = LegendData(:l200)
+fk = training_filekey(l200, DataPeriod(3), DataCategory(:cal))
+config = dataprod_config(l200).qc(fk).ml
+
+# 1. sample + affinity propagation (writes the jlqml sample file)
+sample, cluster, pars, scan = run_qc_sampling(l200, fk, config)
+
+# 2. label the exemplars (pars.exemplar_labels[k] for each cluster k), e.g. in the Pluto notebook
+
+# 3. train, tune and store the model (writes the jld2 model file)
+model, pars_entry, rep = run_qc_training(l200, fk, config, pars)
+
+# 4. classify waveforms
+labels = model(waveforms)
+```
+
+The config lives under `dataprod_config(l200).qc(filekey).ml`, with keys
+`detectors`, `n_max`, `waveform_column`, `strata`, `features`,
+`affinity_propagation`, `svm`, and `categories`. The sample is drawn from the
+raw files of every analysis run of the period in two passes: a scan of the DAQ
+row scalars, then `waveform_stats` on the waveforms of `n_scan` pool rows per
+detector, from which the rules draw their strata:
+
+```yaml
+strata:
+  aux_triggers: {pulser: PULS01, forced_trigger: BSLN01}
+  exclude: [pulser, forced_trigger]
+  ts_window: 125.0
+  n_scan: 200000
+  bl_window: [0.0, 39.0]      # µs
+  tail_window: [70.0, 95.0]   # µs
+  rules:
+    - {name: zero_energy, select: "daqenergy == 0", fraction: 0.10}
+    - {name: saturated, select: "t_sat_hi > 0 || t_sat_lo > 0", fraction: 0.05}
+    - {name: bad_tau, select: "daqenergy > 0 && !(tail_tau > 150us && tail_tau < 2000us)", fraction: 0.10}
+    - {name: multi_trigger, select: "n_triggers > 1", fraction: 0.05}
+    - {name: baseline_outlier, select: "baseline_dev > 5", fraction: 0.05}
+  uniform: "daqenergy > 0"
+```
+
+`pars_entry` is what the processor writes to `rpars.ml`, together with a
+validity entry for the training run.
