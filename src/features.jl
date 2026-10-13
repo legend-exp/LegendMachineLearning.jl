@@ -16,10 +16,10 @@ struct HaarFeatures{Q<:Unitful.Time} <: AbstractFeatureExtractor
 end
 export HaarFeatures
 
-function HaarFeatures(; n_samples::Int=256, normalize::Bool=true,
-        bl_window::ClosedInterval=0.0u"µs"..25.0u"µs")
+function HaarFeatures(; n_samples::Int = 256, normalize::Bool = true,
+    bl_window::ClosedInterval = 0.0u"µs"..25.0u"µs")
     n_samples > 0 || throw(ArgumentError("n_samples must be positive, got $n_samples"))
-    HaarFeatures(n_samples, normalize, bl_window)
+    return HaarFeatures(n_samples, normalize, bl_window)
 end
 
 """
@@ -39,8 +39,12 @@ function haar_passes(fe::HaarFeatures, n_input::Integer)
         passes += 1
     end
     n == fe.n_samples ||
-        throw(ArgumentError("waveform length $n_input cannot be reduced to n_samples = $(fe.n_samples) by pairwise Haar averaging (reaches $n after $passes passes)"))
-    passes
+        throw(
+            ArgumentError(
+                "waveform length $n_input cannot be reduced to n_samples = $(fe.n_samples) by pairwise Haar averaging (reaches $n after $passes passes)"
+            )
+        )
+    return passes
 end
 export haar_passes
 
@@ -70,6 +74,6 @@ function features(fe::HaarFeatures, wvfs::AbstractVector{<:RDWaveform})
         replace!(nf, zero(eltype(nf)) => one(eltype(nf)))
         w = multiply_waveform.(w, inv.(nf))
     end
-    Matrix{Float32}(permutedims(flatview(VectorOfSimilarArrays(w.signal))))
+    return Matrix{Float32}(permutedims(flatview(VectorOfSimilarArrays(w.signal))))
 end
 export features

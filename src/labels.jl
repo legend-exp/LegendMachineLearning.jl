@@ -13,10 +13,12 @@ partially labeled clusters.
 """
 function propagate_labels(cluster::ClusterResult, exemplar_labels::AbstractVector{<:Integer})
     axes(exemplar_labels, 1) == axes(cluster.exemplars, 1) ||
-        throw(DimensionMismatch("$(length(exemplar_labels)) exemplar labels for $(length(cluster.exemplars)) exemplars"))
+        throw(
+            DimensionMismatch("$(length(exemplar_labels)) exemplar labels for $(length(cluster.exemplars)) exemplars")
+        )
     missing_idx = findall(==(UNLABELED), exemplar_labels)
     isempty(missing_idx) || throw(ArgumentError("exemplars $(missing_idx) are unlabeled"))
-    [Int(exemplar_labels[k]) for k in cluster.assignment]
+    return [Int(exemplar_labels[k]) for k in cluster.assignment]
 end
 export propagate_labels
 
@@ -42,6 +44,6 @@ function class_fractions(labels::AbstractVector{<:Integer}, categories::Dict{Int
         counts[l] += 1
     end
     n = length(labels)
-    Dict{Int,Float64}(k => c / n for (k, c) in counts)
+    return Dict{Int,Float64}(k => c / n for (k, c) in counts)
 end
 export class_fractions

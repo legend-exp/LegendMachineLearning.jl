@@ -10,7 +10,7 @@ function training_filekey(data::LegendData, period::DataPeriod, category::DataCa
     cat = Symbol(string(category))
     runs = filter(r -> getproperty(r, cat).is_analysis_run, rinfo)
     isempty(runs) && throw(ArgumentError("period $period has no analysis run in category $category"))
-    getproperty(first(runs), cat).startkey
+    return getproperty(first(runs), cat).startkey
 end
 export training_filekey
 
@@ -35,7 +35,7 @@ function raw_filekeys(data::LegendData, period::DataPeriod, category::DataCatego
         append!(filekeys, run_filekeys)
     end
     isempty(filekeys) && throw(ArgumentError("period $period has no raw files in category $category"))
-    filekeys
+    return filekeys
 end
 export raw_filekeys
 
@@ -49,7 +49,7 @@ function flag_coincident(ts, aux_ts, window)
     issorted(aux_ts) || throw(ArgumentError("aux_ts must be sorted"))
     map(ts) do t
         i = searchsortedfirst(aux_ts, t - window)
-        i ≤ lastindex(aux_ts) && aux_ts[i] ≤ t + window
+        return i ≤ lastindex(aux_ts) && aux_ts[i] ≤ t + window
     end
 end
 
@@ -72,7 +72,7 @@ triggers and its own row count, while a phy file writes every DAQ event to
 every channel.
 """
 function scan_candidates(data::LegendData, filekeys::AbstractVector{FileKey}, det::DetectorId, aux_triggers;
-        ts_window::Unitful.Time=125u"µs")
+    ts_window::Unitful.Time = 125u"µs")
     aux = collect(aux_triggers)
     flag_names = Symbol[Symbol(first(p)) for p in aux]
     allunique(flag_names) || throw(ArgumentError("aux trigger names must be unique, got $flag_names"))
@@ -100,7 +100,7 @@ function scan_candidates(data::LegendData, filekeys::AbstractVector{FileKey}, de
         append!(t_sat_lo, t.t_sat_lo)
         append!(t_sat_hi, t.t_sat_hi)
     end
-    Table(; filekey, eventnumber, timestamp, daqenergy, baseline, t_sat_lo, t_sat_hi,
+    return Table(; filekey, eventnumber, timestamp, daqenergy, baseline, t_sat_lo, t_sat_hi,
         NamedTuple{Tuple(flag_names)}(Tuple(flags))...)
 end
 export scan_candidates
@@ -132,7 +132,7 @@ function add_pool_columns(pool)
     end
     triggered = sort(filter(>(0), pool.daqenergy))
     rank = map(e -> e > 0 ? searchsortedlast(triggered, e) / length(triggered) : 0.0, pool.daqenergy)
-    Table(merge(columns(pool), (baseline_dev = deviation ./ median(deviation), daqenergy_rank = rank)))
+    return Table(merge(columns(pool), (baseline_dev = deviation ./ median(deviation), daqenergy_rank = rank)))
 end
 
 """
@@ -146,7 +146,7 @@ result per row.
 """
 function rule_predicate(expr::AbstractString)
     pf = ljl_propfunc(expr)
-    t -> pf.(t)
+    return t -> pf.(t)
 end
 
 # One Bool per row of `cand`; a `missing` or `NaN` result counts as not selected.
@@ -157,7 +157,7 @@ function _rule_mask(select, cand)
     map(v) do x
         x isa Bool && return x
         (ismissing(x) || (x isa AbstractFloat && isnan(x))) && return false
-        throw(ArgumentError("rule predicate returned $(repr(x)), expected a Bool, missing or NaN"))
+        return throw(ArgumentError("rule predicate returned $(repr(x)), expected a Bool, missing or NaN"))
     end
 end
 
@@ -179,7 +179,7 @@ still left.
 `n` at or above `length(cand)` returns every row, labeled by the first rule
 it matches, else `:uniform` or `:top_up`.
 """
-function select_indices(cand, n::Integer; rules, uniform, rng::AbstractRNG=Random.default_rng())
+function select_indices(cand, n::Integer; rules, uniform, rng::AbstractRNG = Random.default_rng())
     n ≥ 0 || throw(ArgumentError("n must be non-negative, got $n"))
     names = Symbol[name for (name, _, _) in rules]
     allunique(names) || throw(ArgumentError("rule names must be unique, got $names"))
@@ -189,12 +189,14 @@ function select_indices(cand, n::Integer; rules, uniform, rng::AbstractRNG=Rando
     for (name, f) in zip(names, fractions)
         0 ≤ f ≤ 1 || throw(ArgumentError("fraction of rule $name must be between 0 and 1, got $f"))
     end
-    sum(fractions; init=0.0) ≤ 1 ||
+    sum(fractions; init = 0.0) ≤ 1 ||
         throw(ArgumentError("the rule fractions must sum to at most 1, got $(sum(fractions))"))
 
     matching_uniform = _rule_mask(uniform, cand)
-    strata = Tuple{Symbol,Vector{Bool},Int}[(name, _rule_mask(select, cand), round(Int, fraction * n))
-        for (name, select, fraction) in rules]
+    strata = Tuple{Symbol,Vector{Bool},Int}[
+        (name, _rule_mask(select, cand), round(Int, fraction * n))
+        for (name, select, fraction) in rules
+    ]
     push!(strata, (:uniform, matching_uniform, n), (:top_up, fill(true, axes(matching_uniform)), n))
 
     rows = eachindex(matching_uniform)
@@ -214,7 +216,7 @@ function select_indices(cand, n::Integer; rules, uniform, rng::AbstractRNG=Rando
         end
     end
     perm = sortperm(idx)
-    idx[perm], stratum[perm]
+    return idx[perm], stratum[perm]
 end
 export select_indices
 
@@ -228,7 +230,7 @@ a uniform draw would leave the waveform rules few triggered events to act on.
 """
 function scan_rows(daqenergy, n::Integer, rng::AbstractRNG)
     order = vcat(shuffle(rng, findall(>(0), daqenergy)), shuffle(rng, findall(<=(0), daqenergy)))
-    sort!(order[1:min(n, length(order))])
+    return sort!(order[1:min(n, length(order))])
 end
 
 """
@@ -250,7 +252,7 @@ the saturation counts, the pool columns and the waveform statistics.
 rule selects.
 """
 function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, row,
-        n_det::Integer, strata::NamedTuple, waveform_column::Symbol, rng)
+    n_det::Integer, strata::NamedTuple, waveform_column::Symbol, rng)
     det, ch, det_type = row.detector, row.channel, row.det_type
     # `read_ldata` selects raw-tier channel groups by `DetectorId`, never `ChannelId`;
     # `ch` and `det_type` only ever fill the sample's columns below.
@@ -280,8 +282,12 @@ function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, r
         timestamp = scan.timestamp[rows_of[fk]]
         wf = read_ldata((waveform_column, :timestamp), data, (DataTier(:raw), fk, timestamp, det))
         wf.timestamp == timestamp ||
-            throw(ErrorException("the waveforms read from $fk for $det do not carry the timestamps they were selected by"))
-        collect(getproperty(wf, waveform_column))
+            throw(
+                ErrorException(
+                    "the waveforms read from $fk for $det do not carry the timestamps they were selected by"
+                )
+            )
+        return collect(getproperty(wf, waveform_column))
     end
     scan = scan[reduce(vcat, [rows_of[fk] for fk in files])]
     wvfs = ArrayOfRDWaveforms(reduce(vcat, wvf_parts))
@@ -295,7 +301,7 @@ function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, r
         fill(det_type, n), full.daqenergy[idx], full.baseline[idx], full.timestamp[idx], stratum)
     stat_names = (:t_sat_lo, :t_sat_hi, :baseline_dev, :daqenergy_rank, propertynames(stats)...)
     sample_stats = Table(NamedTuple{stat_names}(map(c -> getproperty(full, c)[idx], stat_names)))
-    (; sample, stats=sample_stats, n_scan=length(full), n_matched)
+    return (; sample, stats = sample_stats, n_scan = length(full), n_matched)
 end
 
 """
@@ -340,8 +346,8 @@ to run without a channel map, e.g. a hand-built `TypedTables.Table` against
 raw files that predate or lack channel-map coverage.
 """
 function build_sample(data::LegendData, filekey::FileKey, config::PropDict;
-        rng::AbstractRNG=Random.default_rng(), chinfo=channelinfo(data, filekey; system=:geds),
-        filekeys::AbstractVector{FileKey}=raw_filekeys(data, filekey.period, filekey.category))
+    rng::AbstractRNG = Random.default_rng(), chinfo = channelinfo(data, filekey; system = :geds),
+    filekeys::AbstractVector{FileKey} = raw_filekeys(data, filekey.period, filekey.category))
     detectors = DetectorId.(config.detectors)
     isempty(detectors) && throw(ArgumentError("config.detectors is empty"))
     isempty(filekeys) && throw(ArgumentError("no raw files for $(filekey.period) $(filekey.category)"))
@@ -351,24 +357,24 @@ function build_sample(data::LegendData, filekey::FileKey, config::PropDict;
         haskey(sc, key) || throw(ArgumentError("config.strata.$key is required"))
     end
     window(v) = Float64(v[1]) * u"µs" .. Float64(v[2]) * u"µs"
-    strata = (aux_triggers=[Symbol(k) => DetectorId(string(v)) for (k, v) in get(sc, :aux_triggers, PropDict())],
-        exclude=Symbol.(get(sc, :exclude, Symbol[])),
-        ts_window=Float64(get(sc, :ts_window, 125)) * u"µs",
-        n_scan=Int(get(sc, :n_scan, 200_000)),
-        bl_window=window(sc.bl_window), tail_window=window(sc.tail_window),
-        rules=[(Symbol(r.name), rule_predicate(String(r.select)), Float64(r.fraction)) for r in get(sc, :rules, [])],
-        uniform=rule_predicate(String(get(sc, :uniform, "daqenergy > 0"))))
+    strata = (aux_triggers = [Symbol(k) => DetectorId(string(v)) for (k, v) in get(sc, :aux_triggers, PropDict())],
+        exclude = Symbol.(get(sc, :exclude, Symbol[])),
+        ts_window = Float64(get(sc, :ts_window, 125)) * u"µs",
+        n_scan = Int(get(sc, :n_scan, 200_000)),
+        bl_window = window(sc.bl_window), tail_window = window(sc.tail_window),
+        rules = [(Symbol(r.name), rule_predicate(String(r.select)), Float64(r.fraction)) for r in get(sc, :rules, [])],
+        uniform = rule_predicate(String(get(sc, :uniform, "daqenergy > 0"))))
     strata.n_scan ≥ n_det ||
         throw(ArgumentError("config.strata.n_scan = $(strata.n_scan) is below the per-detector share $n_det of n_max"))
     rows = map(detectors) do det
         i = findfirst(==(det), chinfo.detector)
         isnothing(i) && throw(ArgumentError("detector $det not found in the channel map of $filekey"))
-        chinfo[i]
+        return chinfo[i]
     end
     parts = [_detector_sample(data, filekeys, row, n_det, strata, Symbol(config.waveform_column), rng)
              for row in rows]
     by_detector(f) = PropDict((Symbol(string(row.detector)) => f(p) for (row, p) in zip(rows, parts))...)
-    (sample=vcat((p.sample for p in parts)...), stats=reduce(vcat, [p.stats for p in parts]),
-        n_scan=by_detector(p -> p.n_scan), n_matched=by_detector(p -> p.n_matched))
+    return (sample = vcat((p.sample for p in parts)...), stats = reduce(vcat, [p.stats for p in parts]),
+        n_scan = by_detector(p -> p.n_scan), n_matched = by_detector(p -> p.n_matched))
 end
 export build_sample

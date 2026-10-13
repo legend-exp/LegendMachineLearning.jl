@@ -26,7 +26,7 @@ The waveforms are processed in blocks, so the baseline-subtracted and filtered c
 never exist for the whole array at once.
 """
 function waveform_stats(wvfs::ArrayOfRDWaveforms; bl_window::ClosedInterval, tail_window::ClosedInterval,
-        trigger_threshold::Real=5, trigger_mintot=2.0u"µs", tx_mintot=32.0u"ns")
+    trigger_threshold::Real = 5, trigger_mintot = 2.0u"µs", tx_mintot = 32.0u"ns")
     isempty(wvfs) && throw(ArgumentError("no waveforms to compute statistics of"))
     crossing = Intersect(mintot = tx_mintot)
     trigger_filter = TrapezoidalChargeFilter(2.0u"µs", 1.0u"µs")
@@ -40,7 +40,7 @@ function waveform_stats(wvfs::ArrayOfRDWaveforms; bl_window::ClosedInterval, tai
         # `Intersect` reports position zero with multiplicity zero when nothing crosses. The
         # times are stored as Float64 ns whatever the precision of the time axis.
         t_at(fraction) = map(crossing.(block_bl, wf_max .* fraction)) do c
-            (c.multiplicity > 0 ? Float64(ustrip(u"ns", c.x)) : NaN) * u"ns"
+            return (c.multiplicity > 0 ? Float64(ustrip(u"ns", c.x)) : NaN) * u"ns"
         end
         t10, t50, t90 = t_at(0.1), t_at(0.5), t_at(0.9)
         # The construction of `LegendDSP.get_triggers`, written out because LegendDSP releases
@@ -50,12 +50,13 @@ function waveform_stats(wvfs::ArrayOfRDWaveforms; bl_window::ClosedInterval, tai
             rightendpoint(bl_window)).sigma
         trig_threshold = map(σ -> iszero(σ) ? one(σ) : trigger_threshold * σ, trig_sigma)
         n_triggers = trigger_crossing.(block_trig, trig_threshold).multiplicity
-        Table(blmean=bl.mean, blsigma=bl.sigma, blslope=bl.slope, bl_slope_sigma=bl.slope_residual_sigma,
-            tailmean=tail.mean, tailsigma=tail.sigma, tailslope=tail.slope,
-            tail_tau=uconvert.(u"µs", -tail.mean ./ tail.slope),
-            wf_max=wf_max, wf_min=minimum.(block_bl.signal), amplitude=wf_max,
-            t10=t10, t50=t50, t90=t90, risetime=t90 .- t10, n_triggers=Int.(n_triggers))
+        return Table(blmean = bl.mean, blsigma = bl.sigma, blslope = bl.slope,
+            bl_slope_sigma = bl.slope_residual_sigma,
+            tailmean = tail.mean, tailsigma = tail.sigma, tailslope = tail.slope,
+            tail_tau = uconvert.(u"µs", -tail.mean ./ tail.slope),
+            wf_max = wf_max, wf_min = minimum.(block_bl.signal), amplitude = wf_max,
+            t10 = t10, t50 = t50, t90 = t90, risetime = t90 .- t10, n_triggers = Int.(n_triggers))
     end
-    reduce(vcat, blocks)
+    return reduce(vcat, blocks)
 end
 export waveform_stats

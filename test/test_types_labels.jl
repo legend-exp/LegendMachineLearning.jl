@@ -9,10 +9,10 @@ using LegendDataManagement: FileKey, ChannelId, DetectorId
 using PropDicts
 using OffsetArrays
 
-flat_wf(n) = RDWaveform(range(0u"µs", step=0.016u"µs", length=n), zeros(n))
+flat_wf(n) = RDWaveform(range(0u"µs", step = 0.016u"µs", length = n), zeros(n))
 
 function make_sample(n)
-    WaveformSample(
+    return WaveformSample(
         ArrayOfRDWaveforms([flat_wf(8) for _ in 1:n]),
         fill(FileKey("l200-p03-r001-cal-20230318T012144Z"), n),
         collect(1:n),
@@ -43,7 +43,7 @@ end
 end
 
 @testset "propagate_labels" begin
-    cluster = ClusterResult((damp=0.5, preference=-1.0), [1, 2, 2, 3, 1], [1, 2, 4], true, 10)
+    cluster = ClusterResult((damp = 0.5, preference = -1.0), [1, 2, 2, 3, 1], [1, 2, 4], true, 10)
     @test propagate_labels(cluster, [0, 5, 7]) == [0, 5, 5, 7, 0]
     @test_throws "unlabeled" propagate_labels(cluster, [0, UNLABELED, 7])
     @test_throws DimensionMismatch propagate_labels(cluster, [0, 5])

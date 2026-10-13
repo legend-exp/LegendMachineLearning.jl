@@ -13,26 +13,27 @@ enumerated, so no vector of size n(n-1)/2 is ever allocated.
 # The similarity matrix is Float64 whatever the feature eltype: affinity propagation declares
 # convergence when the message change scaled by 1/(1 - damp) drops below `tol`, an absolute
 # threshold that Float32 rounding noise on similarities of order 10 to 100 never reaches.
-_similarity(X::AbstractMatrix, metric::SemiMetric) = -pairwise(metric, Matrix{Float64}(X), dims=1)
+_similarity(X::AbstractMatrix, metric::SemiMetric) = -pairwise(metric, Matrix{Float64}(X), dims = 1)
 
 function preference_grid(X::AbstractMatrix, quantiles::AbstractVector{<:Real};
-        metric::SemiMetric=Cityblock(), rng::AbstractRNG=Random.default_rng(), n_pairs_max::Int=1_000_000)
+    metric::SemiMetric = Cityblock(), rng::AbstractRNG = Random.default_rng(), n_pairs_max::Int = 1_000_000)
     Base.require_one_based_indexing(X)
     S = _similarity(X, metric)
     n = size(S, 1)
     n_pairs = n * (n - 1) ÷ 2
     pairs = if n_pairs ≤ n_pairs_max
-        [(i, j) for j in 1:n for i in 1:j-1]
+        [(i, j) for j in 1:n for i in 1:(j - 1)]
     else
         drawn = Set{Tuple{Int,Int}}()
         while length(drawn) < n_pairs_max
-            i = rand(rng, 1:n); j = rand(rng, 1:n)
+            i = rand(rng, 1:n)
+            j = rand(rng, 1:n)
             i == j || push!(drawn, minmax(i, j))
         end
         drawn
     end
     sampled = [S[i, j] for (i, j) in pairs]
-    S, quantile(sampled, collect(Float64, quantiles))
+    return S, quantile(sampled, collect(Float64, quantiles))
 end
 export preference_grid
 
@@ -44,13 +45,13 @@ function _run_ap(S::AbstractMatrix, damp::Real, preference::Real, maxiter::Integ
     S[diagind(S)] .= preference
     result = try
         redirect_stdout(devnull) do
-            Clustering.affinityprop(S; damp=Float64(damp), maxiter, tol=Float64(tol), display=:none)
+            return Clustering.affinityprop(S; damp = Float64(damp), maxiter, tol = Float64(tol), display = :none)
         end
     catch e
         e isa AssertionError || rethrow()
         return Int[], Int[], false, maxiter
     end
-    collect(Int, result.assignments), collect(Int, result.exemplars), result.converged, result.iterations
+    return collect(Int, result.assignments), collect(Int, result.exemplars), result.converged, result.iterations
 end
 
 """
@@ -66,9 +67,9 @@ overwritten with the grid point's preference before each call, so it never
 holds a specific preference once the scan returns.
 """
 function scan_affinity_propagation(X::AbstractMatrix;
-        damp::AbstractVector{<:Real}, preference_quantile::AbstractVector{<:Real},
-        target_n_clusters::Int=100, maxiter::Int=1000, tol::Real=1e-6, metric::SemiMetric=Cityblock(),
-        rng::AbstractRNG=Random.default_rng())
+    damp::AbstractVector{<:Real}, preference_quantile::AbstractVector{<:Real},
+    target_n_clusters::Int = 100, maxiter::Int = 1000, tol::Real = 1e-6, metric::SemiMetric = Cityblock(),
+    rng::AbstractRNG = Random.default_rng())
     Base.require_one_based_indexing(X)
     damp = collect(Float64, damp)
     preference_quantile = collect(Float64, preference_quantile)
@@ -88,8 +89,9 @@ function scan_affinity_propagation(X::AbstractMatrix;
     dist[.!converged] .= typemax(Int)
     candidates = findall(==(minimum(dist)), dist)
     best_ci = candidates[argmin(iterations[candidates])]
-    best = (i_preference=best_ci[1], i_damp=best_ci[2], damp=damp[best_ci[2]], preference=preference[best_ci[1]])
-    (; damp, preference_quantile, preference, n_clusters, converged=Matrix(converged), iterations, best, S)
+    best =
+        (i_preference = best_ci[1], i_damp = best_ci[2], damp = damp[best_ci[2]], preference = preference[best_ci[1]])
+    return (; damp, preference_quantile, preference, n_clusters, converged = Matrix(converged), iterations, best, S)
 end
 export scan_affinity_propagation
 
@@ -103,15 +105,18 @@ from `scan_affinity_propagation`, reused instead of recomputed; its diagonal
 is overwritten with `preference` on every call.
 """
 function fit_affinity_propagation(X::AbstractMatrix; damp::Real, preference::Real,
-        preference_quantile::Real=NaN, maxiter::Int=1000, tol::Real=1e-6, metric::SemiMetric=Cityblock(),
-        S::Union{Nothing,AbstractMatrix}=nothing)
+    preference_quantile::Real = NaN, maxiter::Int = 1000, tol::Real = 1e-6, metric::SemiMetric = Cityblock(),
+    S::Union{Nothing,AbstractMatrix} = nothing)
     S = S === nothing ? _similarity(X, metric) : S
     assignment, exemplars, conv, iters = _run_ap(S, damp, preference, maxiter, tol)
-    isempty(exemplars) && throw(ArgumentError(
-        "affinity propagation found no exemplar for damp = $damp, preference = $preference within maxiter = $maxiter"))
-    ClusterResult(
-        (damp=Float64(damp), preference=Float64(preference), preference_quantile=Float64(preference_quantile),
-         maxiter=maxiter, tol=Float64(tol), metric=string(nameof(typeof(metric)))),
+    isempty(exemplars) && throw(
+        ArgumentError(
+            "affinity propagation found no exemplar for damp = $damp, preference = $preference within maxiter = $maxiter"
+        )
+    )
+    return ClusterResult(
+        (damp = Float64(damp), preference = Float64(preference), preference_quantile = Float64(preference_quantile),
+            maxiter = maxiter, tol = Float64(tol), metric = string(nameof(typeof(metric)))),
         assignment, exemplars, conv, iters)
 end
 export fit_affinity_propagation

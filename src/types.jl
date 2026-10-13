@@ -28,27 +28,29 @@ struct WaveformSample
     timestamp::Vector{typeof(1.0u"s")}
     stratum::Vector{Symbol}
     function WaveformSample(waveform, filekey, eventnumber, channel, detector, det_type,
-            daqenergy, baseline, timestamp, stratum)
+        daqenergy, baseline, timestamp, stratum)
         ax = axes(waveform, 1)
         for (name, v) in ((:filekey, filekey), (:eventnumber, eventnumber), (:channel, channel),
-                          (:detector, detector), (:det_type, det_type), (:daqenergy, daqenergy),
-                          (:baseline, baseline), (:timestamp, timestamp), (:stratum, stratum))
+            (:detector, detector), (:det_type, det_type), (:daqenergy, daqenergy),
+            (:baseline, baseline), (:timestamp, timestamp), (:stratum, stratum))
             axes(v, 1) == ax || throw(DimensionMismatch("field $name has axes $(axes(v, 1)), waveform has $ax"))
         end
-        new(waveform, filekey, eventnumber, channel, detector, det_type, daqenergy, baseline, timestamp, stratum)
+        return new(waveform, filekey, eventnumber, channel, detector, det_type, daqenergy, baseline, timestamp, stratum)
     end
 end
 export WaveformSample
 
 Base.length(s::WaveformSample) = length(s.waveform)
 
-Base.getindex(s::WaveformSample, idxs) = WaveformSample(
-    s.waveform[idxs], s.filekey[idxs], s.eventnumber[idxs], s.channel[idxs],
-    s.detector[idxs], s.det_type[idxs], s.daqenergy[idxs], s.baseline[idxs],
-    s.timestamp[idxs], s.stratum[idxs])
+function Base.getindex(s::WaveformSample, idxs)
+    return WaveformSample(
+        s.waveform[idxs], s.filekey[idxs], s.eventnumber[idxs], s.channel[idxs],
+        s.detector[idxs], s.det_type[idxs], s.daqenergy[idxs], s.baseline[idxs],
+        s.timestamp[idxs], s.stratum[idxs])
+end
 
 function Base.vcat(samples::WaveformSample...)
-    WaveformSample(
+    return WaveformSample(
         ArrayOfRDWaveforms(reduce(vcat, (collect(s.waveform) for s in samples))),
         reduce(vcat, (s.filekey for s in samples)),
         reduce(vcat, (s.eventnumber for s in samples)),
@@ -84,7 +86,7 @@ A fitted MLJ machine together with the feature extractor it was trained
 on, the label-to-category table, and provenance metadata. Calling the model
 on waveforms returns integer labels.
 """
-struct LegendMLModel{M, F<:AbstractFeatureExtractor}
+struct LegendMLModel{M,F<:AbstractFeatureExtractor}
     machine::M
     features::F
     categories::Dict{Int,Symbol}

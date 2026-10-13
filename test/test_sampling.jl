@@ -2,7 +2,8 @@
 
 using Test
 using LegendMachineLearning
-using LegendMachineLearning: select_indices, flag_coincident, scan_candidates, build_sample,
+using LegendMachineLearning:
+    select_indices, flag_coincident, scan_candidates, build_sample,
     add_pool_columns, rule_predicate, scan_rows
 using Unitful
 using StableRNGs, PropDicts
@@ -37,7 +38,7 @@ using RadiationDetectorSignals: ArrayOfRDWaveforms
 
     # A rule with fewer rows than its quota gives what it has; the later strata absorb the rest.
     short = [(:saturated, t -> t.saturated, 0.3), (:bad_tau, t -> t.tail_tau .< 150u"µs", 0.1)]
-    _, stratum_short = select_indices(cand, 200; rules=short, uniform, rng)
+    _, stratum_short = select_indices(cand, 200; rules = short, uniform, rng)
     @test [count(==(s), stratum_short) for s in (:saturated, :bad_tau, :uniform)] == [50, 20, 130]
 
     # The whole table, labeled by the first rule each row matches.
@@ -46,29 +47,30 @@ using RadiationDetectorSignals: ArrayOfRDWaveforms
     @test stratum_all[[1, 310, 960, 500]] == [:zero_energy, :bad_tau, :saturated, :uniform]
 
     # Too few rows for the remainder of `n` match `uniform`: the rest tops it up.
-    scarce = Table(daqenergy=vcat(zeros(60), fill(500.0, 5)))
-    _, stratum_s = select_indices(scarce, 20; rules=[(:zero_energy, t -> t.daqenergy .== 0, 0.1)], uniform, rng)
+    scarce = Table(daqenergy = vcat(zeros(60), fill(500.0, 5)))
+    _, stratum_s = select_indices(scarce, 20; rules = [(:zero_energy, t -> t.daqenergy .== 0, 0.1)], uniform, rng)
     @test [count(==(s), stratum_s) for s in (:zero_energy, :uniform, :top_up)] == [2, 5, 13]
 
     # `missing` and `NaN` in a predicate result count as not selected.
-    odd = Table(daqenergy=fill(1.0, 4), x=Any[missing, NaN, true, false])
-    @test last(select_indices(odd, 4; rules=[(:x, t -> t.x, 1.0)], uniform, rng)) == [:uniform, :uniform, :x, :uniform]
-    @test_throws "expected a Bool" select_indices(odd, 2; rules=[(:x, t -> fill(1, 4), 0.5)], uniform, rng)
-    @test_throws DimensionMismatch select_indices(odd, 2; rules=[(:x, t -> [true], 0.5)], uniform, rng)
+    odd = Table(daqenergy = fill(1.0, 4), x = Any[missing, NaN, true, false])
+    @test last(select_indices(odd, 4; rules = [(:x, t -> t.x, 1.0)], uniform, rng)) ==
+          [:uniform, :uniform, :x, :uniform]
+    @test_throws "expected a Bool" select_indices(odd, 2; rules = [(:x, t -> fill(1, 4), 0.5)], uniform, rng)
+    @test_throws DimensionMismatch select_indices(odd, 2; rules = [(:x, t -> [true], 0.5)], uniform, rng)
 
     @test_throws "fraction of rule zero_energy must be between 0 and 1" select_indices(cand, 10;
-        rules=[(:zero_energy, t -> t.daqenergy .== 0, 1.5)], uniform, rng)
+        rules = [(:zero_energy, t -> t.daqenergy .== 0, 1.5)], uniform, rng)
     @test_throws "sum to at most 1" select_indices(cand, 10;
-        rules=[(:a, t -> t.saturated, 0.6), (:b, t -> t.saturated, 0.6)], uniform, rng)
+        rules = [(:a, t -> t.saturated, 0.6), (:b, t -> t.saturated, 0.6)], uniform, rng)
     @test_throws "must be unique" select_indices(cand, 10;
-        rules=[(:a, t -> t.saturated, 0.1), (:a, t -> t.saturated, 0.1)], uniform, rng)
-    @test_throws "reserved" select_indices(cand, 10; rules=[(:uniform, t -> t.saturated, 0.1)], uniform, rng)
+        rules = [(:a, t -> t.saturated, 0.1), (:a, t -> t.saturated, 0.1)], uniform, rng)
+    @test_throws "reserved" select_indices(cand, 10; rules = [(:uniform, t -> t.saturated, 0.1)], uniform, rng)
     @test_throws "n must be non-negative" select_indices(cand, -1; rules, uniform, rng)
 end
 
 @testset "rule_predicate" begin
-    t = Table(daqenergy=[0.0, 10.0, 10.0, 10.0], tail_tau=[400.0, 400.0, 100.0, NaN]u"µs",
-        t50=[41.0, 43.0, 43.0, NaN]u"µs")
+    t = Table(daqenergy = [0.0, 10.0, 10.0, 10.0], tail_tau = [400.0, 400.0, 100.0, NaN]u"µs",
+        t50 = [41.0, 43.0, 43.0, NaN]u"µs")
     @test rule_predicate("daqenergy > 0 && !(tail_tau > 150us && tail_tau < 2000us)")(t) == [false, false, true, true]
     @test rule_predicate("t50 > 42000ns")(t) == [false, true, true, false]
     @test_throws "not allowed" rule_predicate("run(`ls`)")
@@ -94,8 +96,8 @@ end
     bl_a[3] = 15600.0
     bl_b[7] = 17600.0
     fk_a, fk_b = FileKey("l200-p03-r001-cal-20230318T012144Z"), FileKey("l200-p03-r001-cal-20230318T022144Z")
-    pool = Table(filekey=vcat(fill(fk_a, m), fill(fk_b, m)), baseline=vcat(bl_a, bl_b),
-        daqenergy=vcat(zeros(10), collect(1.0:190.0)))
+    pool = Table(filekey = vcat(fill(fk_a, m), fill(fk_b, m)), baseline = vcat(bl_a, bl_b),
+        daqenergy = vcat(zeros(10), collect(1.0:190.0)))
     p = add_pool_columns(pool)
     @test findall(>(5), p.baseline_dev) == [3, m + 7]
     @test all(iszero, p.daqenergy_rank[1:10])
@@ -135,7 +137,7 @@ end
         fks = search_disk(FileKey, l200.tier[DataTier(:raw), :cal, DataPeriod(18), DataRun(0)])
         fk = first(fks)
         det = DetectorId(:V97061A)
-        chinfo = Table(detector=[det], channel=[ChannelId(1104000)], det_type=[:icpc])
+        chinfo = Table(detector = [det], channel = [ChannelId(1104000)], det_type = [:icpc])
         rules = [PropDict(:name => "zero_energy", :select => "daqenergy == 0", :fraction => 0.2),
             PropDict(:name => "late", :select => "t50 > 50000ns", :fraction => 0.3),
             PropDict(:name => "high_energy", :select => "daqenergy_rank > 0.8", :fraction => 0.2)]
@@ -148,10 +150,10 @@ end
 
         cand = scan_candidates(l200, fks, det, ())
         @test TypedTables.columnnames(cand) ==
-            (:filekey, :eventnumber, :timestamp, :daqenergy, :baseline, :t_sat_lo, :t_sat_hi)
+              (:filekey, :eventnumber, :timestamp, :daqenergy, :baseline, :t_sat_lo, :t_sat_hi)
         @test length(cand) == 20
 
-        drawn = build_sample(l200, fk, cfg; rng=StableRNG(5), chinfo, filekeys=fks)
+        drawn = build_sample(l200, fk, cfg; rng = StableRNG(5), chinfo, filekeys = fks)
         s = drawn.sample
         @test length(s) == 12 && length(drawn.stats) == 12
         @test allunique(zip(s.filekey, s.eventnumber))
@@ -181,7 +183,7 @@ end
         # Restricted to the first raw file (10 rows), the pool falls short of the
         # quota of 12: all 10 rows are returned, with a warning.
         drawn1 = @test_logs (:warn, r"only 10 rows") match_mode=:any build_sample(l200, fk, cfg;
-            rng=StableRNG(5), chinfo, filekeys=fks[1:1])
+            rng = StableRNG(5), chinfo, filekeys = fks[1:1])
         @test length(drawn1.sample) == 10
         @test length(unique(drawn1.sample.filekey)) == 1
 
@@ -189,16 +191,16 @@ end
         # whose suffix letter the HPGe id regex rejects before `build_sample`'s
         # own "not found" check ever runs) but names no detector in `chinfo`.
         @test_throws "not found" build_sample(l200, fk, merge(cfg, PropDict(:detectors => ["V00000A"]));
-            rng=StableRNG(5), chinfo, filekeys=fks)
+            rng = StableRNG(5), chinfo, filekeys = fks)
         @test_throws "is empty" build_sample(l200, fk, merge(cfg, PropDict(:detectors => String[]));
-            rng=StableRNG(5), chinfo, filekeys=fks)
-        @test_throws "no raw files" build_sample(l200, fk, cfg; rng=StableRNG(5), chinfo, filekeys=FileKey[])
+            rng = StableRNG(5), chinfo, filekeys = fks)
+        @test_throws "no raw files" build_sample(l200, fk, cfg; rng = StableRNG(5), chinfo, filekeys = FileKey[])
         with_strata(f) = PropDict((k => (k == :strata ? f(v) : v) for (k, v) in cfg)...)
         small_scan = with_strata(st -> PropDict((k => (k == :n_scan ? 5 : v) for (k, v) in st)...))
         @test_throws "below the per-detector share" build_sample(l200, fk, small_scan;
-            rng=StableRNG(5), chinfo, filekeys=fks)
+            rng = StableRNG(5), chinfo, filekeys = fks)
         no_window = with_strata(st -> PropDict((k => v for (k, v) in st if k != :tail_window)...))
         @test_throws "tail_window is required" build_sample(l200, fk, no_window;
-            rng=StableRNG(5), chinfo, filekeys=fks)
+            rng = StableRNG(5), chinfo, filekeys = fks)
     end
 end

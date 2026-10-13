@@ -9,15 +9,17 @@ using RadiationDetectorSignals
 using LegendDataManagement: FileKey, ChannelId, DetectorId, writelprops, readlprops
 
 @testset "features_config" begin
-    fe = features_config(PropDict(:features => PropDict(:n_samples => 128, :normalize => false, :bl_window => [0.0, 10.0])))
+    fe = features_config(
+        PropDict(:features => PropDict(:n_samples => 128, :normalize => false, :bl_window => [0.0, 10.0]))
+    )
     @test fe.n_samples == 128 && fe.normalize == false
     @test fe.bl_window == 0.0u"µs"..10.0u"µs"
 end
 
 @testset "scan grid is YAML-serializable" begin
     # The same shape `run_qc_sampling` writes to `pars.affinity_propagation.scan`.
-    scan = (damp=[0.5, 0.9], preference_quantile=[0.05, 0.5], preference=[-1.0, -2.0],
-        n_clusters=[3 4; 5 6], converged=[true false; true true], iterations=[10 20; 30 40])
+    scan = (damp = [0.5, 0.9], preference_quantile = [0.05, 0.5], preference = [-1.0, -2.0],
+        n_clusters = [3 4; 5 6], converged = [true false; true true], iterations = [10 20; 30 40])
     pd = PropDict(:damp => scan.damp, :preference_quantile => scan.preference_quantile,
         :preference => scan.preference, :n_clusters => LegendMachineLearning._grid_rows(scan.n_clusters),
         :converged => LegendMachineLearning._grid_rows(scan.converged),
@@ -37,14 +39,15 @@ end
 # synthetic sample file through the path-based internals instead.
 @testset "training from a sample file" begin
     rng = StableRNG(9)
-    wf(a) = RDWaveform(range(0u"µs", step=0.016u"µs", length=16), a .+ 0.01 .* randn(rng, 16))
+    wf(a) = RDWaveform(range(0u"µs", step = 0.016u"µs", length = 16), a .+ 0.01 .* randn(rng, 16))
     sig = vcat([fill(-1.0, 16) for _ in 1:40], [vcat(fill(-1.0, 8), fill(1.0, 8)) for _ in 1:40])
     n = length(sig)
     s = WaveformSample(ArrayOfRDWaveforms(wf.(sig)),
         fill(FileKey("l200-p03-r001-cal-20230318T012144Z"), n), collect(1:n),
         fill(ChannelId(1121600), n), fill(DetectorId(:V00048B), n), fill(:icpc, n), fill(1000.0, n),
         fill(15000.0, n), collect(Float64, 1:n) .* u"s", fill(:uniform, n))
-    c = ClusterResult((damp=0.5, preference=-1.0, preference_quantile=0.05, maxiter=10, tol=1e-6, metric="Cityblock"),
+    c = ClusterResult(
+        (damp = 0.5, preference = -1.0, preference_quantile = 0.05, maxiter = 10, tol = 1e-6, metric = "Cityblock"),
         vcat(fill(1, 40), fill(2, 40)), [1, 41], true, 5)
     training_fk = FileKey("l200-p03-r002-cal-20230501T000000Z")
     cfg = PropDict(
@@ -69,9 +72,21 @@ end
         @test model.metadata.training_filekey == string(training_fk)
         # unlabeled exemplar is refused
         pars_bad = merge(pars, PropDict(:exemplar_labels => [0, UNLABELED]))
-        @test_throws "unlabeled" LegendMachineLearning._train_from_sample_file(sample_path, training_fk, cfg, pars_bad; rng)
+        @test_throws "unlabeled" LegendMachineLearning._train_from_sample_file(
+            sample_path,
+            training_fk,
+            cfg,
+            pars_bad;
+            rng
+        )
         # stale sample is refused
         pars_stale = merge(pars, PropDict(:sample => PropDict(:sample_sha256 => "0"^64)))
-        @test_throws "sample file changed" LegendMachineLearning._train_from_sample_file(sample_path, training_fk, cfg, pars_stale; rng)
+        @test_throws "sample file changed" LegendMachineLearning._train_from_sample_file(
+            sample_path,
+            training_fk,
+            cfg,
+            pars_stale;
+            rng
+        )
     end
 end

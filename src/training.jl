@@ -22,11 +22,13 @@ function class_weights(y::AbstractVector{<:Integer})
     end
     raw = Dict(k => length(y) / c for (k, c) in counts)
     m = mean(values(raw))
-    Dict{Int,Float64}(k => w / m for (k, w) in raw)
+    return Dict{Int,Float64}(k => w / m for (k, w) in raw)
 end
 export class_weights
 
-_svm_model(cfg::PropDict, cost, gamma) = (cfg.probability ? ProbabilisticSVC : SVC)(; cost=Float64(cost), gamma=Float64(gamma))
+function _svm_model(cfg::PropDict, cost, gamma)
+    return (cfg.probability ? ProbabilisticSVC : SVC)(; cost = Float64(cost), gamma = Float64(gamma))
+end
 
 # MLJBase's generic `predict_mode` fallback is `mode.(predict(...))`, which assumes
 # probabilistic predictions; a deterministic SVC's `predict` already returns labels.
@@ -38,7 +40,7 @@ function _confusion(classes::AbstractVector{Int}, y_true, y_pred)
     for (t, p) in zip(y_true, y_pred)
         cm[idx[t], idx[p]] += 1
     end
-    cm
+    return cm
 end
 
 """
@@ -52,15 +54,19 @@ index-aligned with `y`. `class_accuracy[i]` is `missing`, not `0`, when
 `classes[i]` has no rows in the holdout split.
 """
 function train_svm(X::AbstractMatrix{<:Real}, y::AbstractVector{<:Integer}, svm_config::PropDict;
-        groups::AbstractVector=fill(:all, length(y)), rng::AbstractRNG=Random.default_rng())
+    groups::AbstractVector = fill(:all, length(y)), rng::AbstractRNG = Random.default_rng())
     Base.require_one_based_indexing(X, y, groups)
     size(X, 1) == length(y) == length(groups) ||
-        throw(DimensionMismatch("X has $(size(X, 1)) rows, y has $(length(y)) labels, groups has $(length(groups)) entries"))
+        throw(
+            DimensionMismatch(
+                "X has $(size(X, 1)) rows, y has $(length(y)) labels, groups has $(length(groups)) entries"
+            )
+        )
     classes = sort(unique(Int.(y)))
     length(classes) ≥ 2 || throw(ArgumentError("training needs at least two classes, got $(classes)"))
     yint = Int.(y)
     Xt = table(X)
-    yc = categorical(yint; levels=classes)
+    yc = categorical(yint; levels = classes)
     w = class_weights(yint)
 
     costs, gammas = svm_grid(svm_config)
@@ -71,19 +77,20 @@ function train_svm(X::AbstractMatrix{<:Real}, y::AbstractVector{<:Integer}, svm_
     for g in eachindex(grid)
         i, j = grid[g]
         mach = machine(_svm_model(svm_config, costs[i], gammas[j]), Xt, yc, w)
-        e = evaluate!(mach; resampling=StratifiedCV(; nfolds=n_folds, shuffle=true, rng),
-            measure=balanced_accuracy, operation=(svm_config.probability ? predict_mode : predict), verbosity=0)
+        e = evaluate!(mach; resampling = StratifiedCV(; nfolds = n_folds, shuffle = true, rng),
+            measure = balanced_accuracy, operation = (svm_config.probability ? predict_mode : predict),
+            verbosity = 0)
         cv_score[i, j] = only(e.measurement)
     end
     best_ij = argmax(cv_score)
-    best = (cost=costs[best_ij[1]], gamma=gammas[best_ij[2]], cv_score=cv_score[best_ij])
+    best = (cost = costs[best_ij[1]], gamma = gammas[best_ij[2]], cv_score = cv_score[best_ij])
 
     # holdout confusion matrix with the chosen hyperparameters
     holdout_fraction = 0.2
-    train_idx, test_idx = partition(eachindex(yint), 1 - holdout_fraction; stratify=yint, shuffle=true, rng)
+    train_idx, test_idx = partition(eachindex(yint), 1 - holdout_fraction; stratify = yint, shuffle = true, rng)
     mach_h = machine(_svm_model(svm_config, best.cost, best.gamma), table(X[train_idx, :]),
-        categorical(yint[train_idx]; levels=classes), w)
-    fit!(mach_h; verbosity=0)
+        categorical(yint[train_idx]; levels = classes), w)
+    fit!(mach_h; verbosity = 0)
     y_pred = Int.(unwrap.(_predict_mode(mach_h, table(X[test_idx, :]))))
     y_test = yint[test_idx]
     confusion = _confusion(classes, y_test, y_pred)
@@ -100,10 +107,10 @@ function train_svm(X::AbstractMatrix{<:Real}, y::AbstractVector{<:Integer}, svm_
     group_accuracy = [mean(y_pred[g_test .== g] .== y_test[g_test .== g]) for g in group_names]
 
     mach = machine(_svm_model(svm_config, best.cost, best.gamma), Xt, yc, w)
-    fit!(mach; verbosity=0)
-    rep = (cost=costs, gamma=gammas, cv_score, best, classes, confusion, class_accuracy,
-        groups=group_names, group_accuracy, holdout_fraction)
-    mach, rep
+    fit!(mach; verbosity = 0)
+    rep = (cost = costs, gamma = gammas, cv_score, best, classes, confusion, class_accuracy,
+        groups = group_names, group_accuracy, holdout_fraction)
+    return mach, rep
 end
 export train_svm
 
@@ -128,7 +135,9 @@ function predict_with_margin(m::LegendMLModel, X::AbstractMatrix)
     modes = predict_mode(m.machine, table(X))
     labels = Int.(unwrap.(modes))
     margin = Float64.(pdf.(p, modes))
-    labels, margin
+    return labels, margin
 end
-predict_with_margin(m::LegendMLModel, wvfs::AbstractVector{<:RDWaveform}) = predict_with_margin(m, features(m.features, wvfs))
+function predict_with_margin(m::LegendMLModel, wvfs::AbstractVector{<:RDWaveform})
+    return predict_with_margin(m, features(m.features, wvfs))
+end
 export predict_with_margin

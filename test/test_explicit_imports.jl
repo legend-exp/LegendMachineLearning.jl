@@ -10,5 +10,5 @@ Test.@testset "ExplicitImports" begin
     # training; the module imports their names now so later code can use them
     # without touching this import list.
     Test.@test ExplicitImports.check_no_stale_explicit_imports(LegendMachineLearning;
-        ignore=(:Lux, :adapt, :MLDataDevices, :ADTypes, :AbstractADType, :DI)) === nothing
+        ignore = (:Lux, :adapt, :MLDataDevices, :ADTypes, :AbstractADType, :DI)) === nothing
 end

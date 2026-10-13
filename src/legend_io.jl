@@ -16,7 +16,7 @@ JLD2 model file next to the sample file, same stem.
 """
 function qc_model_filename(sample_path::AbstractString)
     endswith(sample_path, ".lh5") || throw(ArgumentError("expected an .lh5 sample path, got $sample_path"))
-    string(sample_path[1:end-4], ".jld2")
+    return string(sample_path[1:(end - 4)], ".jld2")
 end
 qc_model_filename(data::LegendData, fk::FileKey) = qc_model_filename(qc_sample_filename(data, fk))
 export qc_model_filename
@@ -49,7 +49,7 @@ function qc_ml_pars(data::LegendData, filekey::FileKey)
         (e isa ArgumentError || e isa ErrorException) && occursin("validity", sprint(showerror, e)) || rethrow()
         return nothing
     end
-    PropDict(props)
+    return PropDict(props)
 end
 export qc_ml_pars
 
@@ -69,7 +69,7 @@ function model_pars_entry(training_fk::FileKey, sha256::AbstractString, train_re
         :cv_score => train_report.best.cv_score, :probability => model.machine.model isa ProbabilisticSVC)
     pd.class_fractions = PropDict(class_fractions(model.metadata.labels, model.categories))
     pd.created = string(now())
-    pd
+    return pd
 end
 export model_pars_entry
 
@@ -88,10 +88,18 @@ function load_qc_model(data::LegendData, filekey::FileKey)
         return missing
     end
     haskey(pars, :training_filekey) ||
-        throw(ArgumentError("rpars.ml entry valid for $filekey has no training_filekey; it was not written by the QC training step"))
+        throw(
+            ArgumentError(
+                "rpars.ml entry valid for $filekey has no training_filekey; it was not written by the QC training step"
+            )
+        )
     training_fk = FileKey(pars.training_filekey)
     training_fk.period == filekey.period ||
-        throw(ArgumentError("QC model valid for $filekey was trained in $(training_fk.period), not $(filekey.period); train a model for this period"))
-    load_model(qc_model_filename(data, training_fk); expected_sha256=pars.model_sha256)
+        throw(
+            ArgumentError(
+                "QC model valid for $filekey was trained in $(training_fk.period), not $(filekey.period); train a model for this period"
+            )
+        )
+    return load_model(qc_model_filename(data, training_fk); expected_sha256 = pars.model_sha256)
 end
 export load_qc_model
