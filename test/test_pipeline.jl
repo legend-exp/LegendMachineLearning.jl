@@ -115,8 +115,9 @@ end
         @test t.eventnumber == raw.eventnumber && t.timestamp == raw.timestamp && t.daqenergy == raw.daqenergy
         @test all(==(det), t.detector)
         @test t.waveform isa ArrayOfRDWaveforms
-        @test t.waveform.signal == raw.waveform_presummed.signal
-        @test (t.label, t.margin) == predict_with_margin(model, raw.waveform_presummed)
+        decoded = ArrayOfRDWaveforms([RDWaveform(w.time, Vector(w.signal)) for w in raw.waveform_presummed])
+        @test t.waveform.signal == decoded.signal
+        @test (t.label, t.margin) == predict_with_margin(model, decoded)
         @test all(in((0, 3)), t.label) && all(m -> 0.5 ≤ m ≤ 1, t.margin)
 
         # one block per detector entry; the cap draws a sorted subset of the events of the file
@@ -124,7 +125,7 @@ end
         @test length(t2) == 8
         first4 = t2.eventnumber[1:4]
         @test issorted(first4) && first4 ⊆ raw.eventnumber
-        @test t2.waveform.signal[1:4] == raw.waveform_presummed.signal[findall(in(first4), raw.eventnumber)]
+        @test t2.waveform.signal[1:4] == decoded.signal[findall(in(first4), raw.eventnumber)]
 
         @test_throws "not an aux trigger" classify_filekey(l200, fk, model; detectors=[det], exclude=[:pulser])
         @test_throws "detectors is empty" classify_filekey(l200, fk, model; detectors=String[])

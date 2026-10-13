@@ -155,7 +155,9 @@ function classify_filekey(data::LegendData, fk::FileKey, model::LegendMLModel; d
         raw = read_ldata((waveform_column, :eventnumber), data, DataTier(:raw), fk, det)
         raw.eventnumber == cand.eventnumber ||
             throw(ErrorException("the waveforms of $det in $fk do not line up with its event table"))
-        wvfs = collect(getproperty(raw, waveform_column)[rows])
+        # A whole-column read leaves the signals encoded; `Vector` decodes each one once, where
+        # element access would decode the full trace per sample.
+        wvfs = [RDWaveform(w.time, Vector(w.signal)) for w in getproperty(raw, waveform_column)[rows]]
         label, margin = predict_with_margin(model, wvfs)
         (detector=fill(det, length(rows)), eventnumber=cand.eventnumber[rows], timestamp=cand.timestamp[rows],
             daqenergy=cand.daqenergy[rows], waveform=wvfs, label, margin)
