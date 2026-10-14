@@ -121,3 +121,51 @@ function run_qc_training(
     return _train_from_sample_file(qc_sample_filename(data, training_fk), training_fk, config, pars; rng)
 end
 export run_qc_training
+
+"""
+    classify_filekey(data, fk, model; detectors, aux_triggers, exclude, ts_window, n_max_per_detector,
+        waveform_column, rng) -> TypedTables.Table
+
+Raw events of `fk` of each of `detectors`, classified by `model`: a table
+with the columns `detector`, `eventnumber`, `timestamp`, `daqenergy`,
+`waveform`, `label` and `margin` (see `predict_with_margin`).
+
+`aux_triggers` (`name => detector` pairs or a dictionary of them), `ts_window`
+and the flag names in `exclude` select events as in `build_sample`: events
+within `ts_window` of a trigger of an excluded aux channel are left out.
+Of each detector at most `n_max_per_detector` events are kept, drawn
+uniformly with `rng`, in file order. The waveforms are read from the raw
+column `waveform_column`.
+"""
+function classify_filekey(data::LegendData, fk::FileKey, model::LegendMLModel; detectors,
+    aux_triggers = PropDict(), exclude = Symbol[], ts_window::Unitful.Time = 125u"µs",
+    n_max_per_detector::Integer = typemax(Int), waveform_column::Symbol = :waveform_presummed,
+    rng::AbstractRNG = Random.default_rng())
+    aux = [Symbol(k) => DetectorId(string(v)) for (k, v) in aux_triggers]
+    isempty(detectors) && throw(ArgumentError("detectors is empty"))
+    excluded_names = Symbol.(exclude)
+    for name in excluded_names
+        name in first.(aux) || throw(ArgumentError("exclude names $name, which is not an aux trigger"))
+    end
+    parts = map(DetectorId.(detectors)) do det
+        cand = scan_candidates(data, [fk], det, aux; ts_window)
+        rows = findall(i -> !any(name -> getproperty(cand, name)[i], excluded_names), eachindex(cand))
+        isempty(rows) && throw(ArgumentError("no events of $det left in $fk after excluding $excluded_names"))
+        length(rows) > n_max_per_detector && (rows = sort(shuffle(rng, rows)[1:n_max_per_detector]))
+        raw = read_ldata((waveform_column, :eventnumber), data, DataTier(:raw), fk, det)
+        raw.eventnumber == cand.eventnumber ||
+            throw(ErrorException("the waveforms of $det in $fk do not line up with its event table"))
+        # A whole-column read leaves the signals encoded; `Vector` decodes each one once, where
+        # element access would decode the full trace per sample.
+        wvfs = [RDWaveform(w.time, Vector(w.signal)) for w in getproperty(raw, waveform_column)[rows]]
+        label, margin = predict_with_margin(model, wvfs)
+        return (detector = fill(det, length(rows)), eventnumber = cand.eventnumber[rows],
+            timestamp = cand.timestamp[rows],
+            daqenergy = cand.daqenergy[rows], waveform = wvfs, label, margin)
+    end
+    col(name) = reduce(vcat, [getproperty(p, name) for p in parts])
+    return Table(detector = col(:detector), eventnumber = col(:eventnumber), timestamp = col(:timestamp),
+        daqenergy = col(:daqenergy), waveform = ArrayOfRDWaveforms(col(:waveform)), label = col(:label),
+        margin = col(:margin))
+end
+export classify_filekey
