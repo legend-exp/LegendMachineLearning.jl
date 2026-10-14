@@ -92,6 +92,7 @@ function scan_candidates(data::LegendData, filekeys::AbstractVector{FileKey}, de
             at = read_ldata((:daqenergy, :timestamp), data, DataTier(:raw), fk, a)
             append!(flag, flag_coincident(t.timestamp, sort(at.timestamp[at.daqenergy .> 0]), ts_window))
         end
+        issorted(t.timestamp) || @warn "the timestamps of $det in $fk are not sorted"
         append!(filekey, Iterators.repeated(fk, length(t.eventnumber)))
         append!(eventnumber, t.eventnumber)
         append!(timestamp, t.timestamp)
@@ -241,7 +242,7 @@ end
 of `filekeys` gives the candidate rows; rows flagged by an aux trigger named in
 `strata.exclude` leave the pool, and `add_pool_columns` places the rest within
 it. `scan_rows` picks `strata.n_scan` pool rows, triggered ones first; their
-waveforms are read back from each file by timestamp and summarized by
+waveforms are read back from each file by event number and summarized by
 `waveform_stats`. From these scan
 rows `select_indices` draws `n_det` by `strata.rules`, and the sample takes the
 waveforms already read.
@@ -278,16 +279,16 @@ function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, r
     for (i, fk) in pairs(scan.filekey)
         push!(rows_of[fk], i)
     end
+    # Rows are located by event number, which is unique within a file: the timestamps of a
+    # raw file need not be sorted, so a read selected by timestamp cannot be relied on. The
+    # whole column is read encoded, and only the scan rows are decoded.
     wvf_parts = map(files) do fk
-        timestamp = scan.timestamp[rows_of[fk]]
-        wf = read_ldata((waveform_column, :timestamp), data, (DataTier(:raw), fk, timestamp, det))
-        wf.timestamp == timestamp ||
-            throw(
-                ErrorException(
-                    "the waveforms read from $fk for $det do not carry the timestamps they were selected by"
-                )
-            )
-        return collect(getproperty(wf, waveform_column))
+        raw = read_ldata((waveform_column, :eventnumber), data, DataTier(:raw), fk, det)
+        allunique(raw.eventnumber) || throw(ArgumentError("the event numbers of $det in $fk are not unique"))
+        position = Dict(e => i for (i, e) in pairs(raw.eventnumber))
+        wvfs_fk = getproperty(raw, waveform_column)
+        return [RDWaveform(wvfs_fk[position[e]].time, Vector(wvfs_fk[position[e]].signal))
+                for e in scan.eventnumber[rows_of[fk]]]
     end
     scan = scan[reduce(vcat, [rows_of[fk] for fk in files])]
     wvfs = ArrayOfRDWaveforms(reduce(vcat, wvf_parts))
