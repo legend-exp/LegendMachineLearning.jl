@@ -1,9 +1,12 @@
-.DS_Store
-*.jl.cov
-*.jl.*.cov
-*.jl.mem
-.ipynb_checkpoints
-.vscode
+# Generated data (models, tiers, plots, logs, reports)
+generated/
+
+# Julia artifacts
 Manifest.toml
-Manifest-v*.toml
 LocalPreferences.toml
+
+# SLURM job logs
+slurm-*.out
+slurm-*.err
+*.out.*
+*.err.*
