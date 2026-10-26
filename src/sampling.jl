@@ -287,8 +287,10 @@ function _detector_sample(data::LegendData, filekeys::AbstractVector{FileKey}, r
         allunique(raw.eventnumber) || throw(ArgumentError("the event numbers of $det in $fk are not unique"))
         position = Dict(e => i for (i, e) in pairs(raw.eventnumber))
         wvfs_fk = getproperty(raw, waveform_column)
-        return [RDWaveform(wvfs_fk[position[e]].time, Vector(wvfs_fk[position[e]].signal))
-                for e in scan.eventnumber[rows_of[fk]]]
+        return [
+            RDWaveform(wvfs_fk[position[e]].time, Vector(wvfs_fk[position[e]].signal))
+            for e in scan.eventnumber[rows_of[fk]]
+        ]
     end
     scan = scan[reduce(vcat, [rows_of[fk] for fk in files])]
     wvfs = ArrayOfRDWaveforms(reduce(vcat, wvf_parts))
