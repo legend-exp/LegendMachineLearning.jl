@@ -39,7 +39,7 @@ Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 [compat]
 ADTypes = "1.18"
 Adapt = "4"
-ArraysOfArrays = "0.6"
+ArraysOfArrays = "0.6, 1"
 CategoricalArrays = "1"
 CategoricalDistributions = "0.2"
 Clustering = "0.15.8"
