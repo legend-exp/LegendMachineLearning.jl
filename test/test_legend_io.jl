@@ -132,10 +132,7 @@ end
         write(joinpath(qc_dir, "qc_cal.yaml"), "default:\n  labels: {}\n")
         write(joinpath(qc_dir, "qc_phy.yaml"), "ml:\n  n_max: 10\n  categories:\n    0: normal\n")
         cfg_path = joinpath(dir, "config.json")
-        write(
-            cfg_path,
-            """{"setups": {"l200": {"paths": {"tier": "$(joinpath(dir, "tier"))", "par": "$(joinpath(dir, "par"))", "metadata": "$(joinpath(dir, "metadata"))"}}}}"""
-        )
+        write_data_config(cfg_path, dir)
         withenv("LEGEND_DATA_CONFIG" => cfg_path) do
             l200 = LegendData(:l200)
             ml = qc_ml_config(l200, FileKey("l200-p18-r000-phy-20251107T191821Z"))
@@ -150,10 +147,7 @@ end
 @testset "qc_pars_entry_path and qc_ml_periods" begin
     mktempdir() do dir
         cfg_path = joinpath(dir, "config.json")
-        write(
-            cfg_path,
-            """{"setups": {"l200": {"paths": {"tier": "$(joinpath(dir, "tier"))", "par": "$(joinpath(dir, "par"))", "metadata": "$(joinpath(dir, "metadata"))"}}}}"""
-        )
+        write_data_config(cfg_path, dir)
         withenv("LEGEND_DATA_CONFIG" => cfg_path) do
             l200 = LegendData(:l200)
             mkpath(joinpath(dir, "par"))
