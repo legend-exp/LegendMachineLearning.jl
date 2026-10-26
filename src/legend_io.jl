@@ -38,7 +38,11 @@ export qc_pars_entry_name
 File of the `rpars.ml` entry of `fk` in the primary parameter directory of
 `data`, the one entries are written to.
 """
-qc_pars_entry_path(data::LegendData, fk::FileKey) = joinpath(data_path(data.par), "rpars", "ml", qc_pars_entry_name(fk))
+# The entry name separates its directory with `/` for the validity file; the path is joined
+# from its parts, so it uses the platform's separator.
+function qc_pars_entry_path(data::LegendData, fk::FileKey)
+    return joinpath(data_path(data.par), "rpars", "ml", split(qc_pars_entry_name(fk), '/')...)
+end
 export qc_pars_entry_path
 
 """
