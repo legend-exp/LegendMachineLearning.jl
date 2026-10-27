@@ -21,13 +21,13 @@ import DifferentiationInterface as DI
 
 using Unitful: Unitful, @u_str, uconvert, ustrip
 using IntervalSets: ClosedInterval, leftendpoint, rightendpoint, (..)
-using ArraysOfArrays: flatview, VectorOfSimilarArrays
+using ArraysOfArrays: flatview, VectorOfSimilarArrays, VectorOfSimilarVectors
 using RadiationDetectorSignals: RDWaveform, ArrayOfRDWaveforms
 using RadiationDetectorDSP: signalstats, shift_waveform, multiply_waveform, Intersect, TrapezoidalChargeFilter
 using LegendDSP: HaarAveragingFilter
 using Distances: SemiMetric, Cityblock, pairwise
 using CategoricalArrays: categorical, unwrap
-using CategoricalDistributions: pdf
+using CategoricalDistributions: CategoricalDistributions, pdf
 using MLJBase: machine, fit!, predict, predict_mode, evaluate!, StratifiedCV,
     serializable, restore!, partition
 using MLJModelInterface: table

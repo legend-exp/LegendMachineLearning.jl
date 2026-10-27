@@ -111,7 +111,8 @@ end
         raw = read_ldata((:eventnumber, :timestamp, :daqenergy, :waveform_presummed), l200, DataTier(:raw), fk, det)
 
         t = classify_filekey(l200, fk, model; detectors = ["V97061A"])
-        @test propertynames(t) == (:detector, :eventnumber, :timestamp, :daqenergy, :waveform, :label, :margin)
+        @test propertynames(t) ==
+              (:detector, :eventnumber, :timestamp, :daqenergy, :waveform, :label, :margin, :probabilities)
         @test t.eventnumber == raw.eventnumber && t.timestamp == raw.timestamp && t.daqenergy == raw.daqenergy
         @test all(==(det), t.detector)
         @test t.waveform isa ArrayOfRDWaveforms
@@ -119,6 +120,9 @@ end
         @test t.waveform.signal == decoded.signal
         @test (t.label, t.margin) == predict_with_margin(model, decoded)
         @test all(in((0, 3)), t.label) && all(m -> 0.5 ≤ m ≤ 1, t.margin)
+        @test reduce(hcat, t.probabilities) == permutedims(predict_probabilities(model, decoded)[2])
+        t3 = classify_filekey(l200, fk, model; detectors = [det], n_max_per_detector = 3, classes = [0, 1, 3])
+        @test all(p -> length(p) == 3 && p[2] == 0 && sum(p) ≈ 1, t3.probabilities)
 
         # one block per detector entry; the cap draws a sorted subset of the events of the file
         t2 = classify_filekey(l200, fk, model; detectors = [det, det], n_max_per_detector = 4, rng = StableRNG(1))

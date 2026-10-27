@@ -124,11 +124,13 @@ export run_qc_training
 
 """
     classify_filekey(data, fk, model; detectors, aux_triggers, exclude, ts_window, n_max_per_detector,
-        waveform_column, rng) -> TypedTables.Table
+        waveform_column, classes, rng) -> TypedTables.Table
 
 Raw events of `fk` of each of `detectors`, classified by `model`: a table
 with the columns `detector`, `eventnumber`, `timestamp`, `daqenergy`,
-`waveform`, `label` and `margin` (see `predict_with_margin`).
+`waveform`, `label`, `margin` (the probability of the label) and
+`probabilities` (per event, the probability of each class of `classes`; see
+`predict_probabilities`).
 
 `aux_triggers` (`name => detector` pairs or a dictionary of them), `ts_window`
 and the flag names in `exclude` select events as in `build_sample`: events
@@ -140,7 +142,7 @@ column `waveform_column`.
 function classify_filekey(data::LegendData, fk::FileKey, model::LegendMLModel; detectors,
     aux_triggers = PropDict(), exclude = Symbol[], ts_window::Unitful.Time = 125u"µs",
     n_max_per_detector::Integer = typemax(Int), waveform_column::Symbol = :waveform_presummed,
-    rng::AbstractRNG = Random.default_rng())
+    classes::AbstractVector{<:Integer} = sort(collect(keys(model.categories))), rng::AbstractRNG = Random.default_rng())
     aux = [Symbol(k) => DetectorId(string(v)) for (k, v) in aux_triggers]
     isempty(detectors) && throw(ArgumentError("detectors is empty"))
     excluded_names = Symbol.(exclude)
@@ -158,14 +160,14 @@ function classify_filekey(data::LegendData, fk::FileKey, model::LegendMLModel; d
         # A whole-column read leaves the signals encoded; `Vector` decodes each one once, where
         # element access would decode the full trace per sample.
         wvfs = [RDWaveform(w.time, Vector(w.signal)) for w in getproperty(raw, waveform_column)[rows]]
-        label, margin = predict_with_margin(model, wvfs)
+        label, p = predict_probabilities(model, wvfs; classes)
         return (detector = fill(det, length(rows)), eventnumber = cand.eventnumber[rows],
-            timestamp = cand.timestamp[rows],
-            daqenergy = cand.daqenergy[rows], waveform = wvfs, label, margin)
+            timestamp = cand.timestamp[rows], daqenergy = cand.daqenergy[rows], waveform = wvfs, label,
+            margin = vec(maximum(p, dims = 2)), probabilities = [p[i, :] for i in axes(p, 1)])
     end
     col(name) = reduce(vcat, [getproperty(p, name) for p in parts])
     return Table(detector = col(:detector), eventnumber = col(:eventnumber), timestamp = col(:timestamp),
         daqenergy = col(:daqenergy), waveform = ArrayOfRDWaveforms(col(:waveform)), label = col(:label),
-        margin = col(:margin))
+        margin = col(:margin), probabilities = VectorOfSimilarVectors(col(:probabilities)))
 end
 export classify_filekey

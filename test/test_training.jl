@@ -2,7 +2,8 @@
 
 using Test
 using LegendMachineLearning
-using LegendMachineLearning: train_svm, svm_grid, class_weights, predict_labels, predict_with_margin,
+using LegendMachineLearning:
+    train_svm, svm_grid, class_weights, predict_labels, predict_with_margin, predict_probabilities,
     HaarFeatures
 using PropDicts, StableRNGs, Unitful, IntervalSets
 using RadiationDetectorSignals
@@ -50,6 +51,7 @@ end
         @test predict_labels(m, X[1:3, :]) == [0, 0, 0]
         @test predict_labels(m, X[(end - 2):end, :]) == [3, 3, 3]
         @test_throws "probabilistic" predict_with_margin(m, X[1:2, :])
+        @test_throws "probabilistic" predict_probabilities(m, X[1:2, :])
     end
 
     @testset "class_accuracy for a rare class" begin
@@ -73,6 +75,16 @@ end
         labels, margin = predict_with_margin(m, X[[1, end], :])
         @test labels == [0, 3]
         @test all(0.5 .<= margin .<= 1.0)
+
+        # columns follow `classes`; an untrained class has probability zero
+        lp, p = predict_probabilities(m, X[[1, end], :]; classes = [3, 5, 0])
+        @test lp == labels
+        @test size(p) == (2, 3)
+        @test all(p[:, 2] .== 0)
+        @test sum(p, dims = 2) ≈ ones(2, 1)
+        @test p[:, 3] ≈ [margin[1], 1 - margin[2]]
+        @test predict_probabilities(m, X[[1, end], :])[2] == p[:, [3, 1]]
+        @test_throws "leaves out" predict_probabilities(m, X[1:2, :]; classes = [0])
     end
 
     @testset "callable on waveforms" begin
