@@ -141,3 +141,37 @@ function predict_with_margin(m::LegendMLModel, wvfs::AbstractVector{<:RDWaveform
     return predict_with_margin(m, features(m.features, wvfs))
 end
 export predict_with_margin
+
+"""
+    predict_probabilities(m::LegendMLModel, X_or_wvfs; classes) -> (labels, probabilities)
+
+Labels and the probability of every class in `classes` (default: the sorted
+labels of `m.categories`): `probabilities[i, j]` is the probability of event
+`i` for class `classes[j]`. A class the model was not trained on has
+probability zero. The label is the class of highest probability. Throws when
+the model knows a class that `classes` leaves out. Only defined for models
+trained with `probability = true`.
+"""
+function predict_probabilities(m::LegendMLModel, X::AbstractMatrix;
+    classes::AbstractVector{<:Integer} = sort(collect(keys(m.categories))))
+    m.machine.model isa ProbabilisticSVC ||
+        throw(ArgumentError("probabilities need a probabilistic model; this model is $(typeof(m.machine.model))"))
+    p = predict(m.machine, table(X))
+    pool = CategoricalDistributions.classes(p)
+    known = Int.(unwrap.(pool))
+    column = Dict(c => j for (j, c) in pairs(classes))
+    missing_classes = setdiff(known, classes)
+    isempty(missing_classes) ||
+        throw(ArgumentError("the model predicts the classes $missing_classes, which classes = $classes leaves out"))
+    p_known = pdf(p, pool)
+    probabilities = zeros(Float64, size(X, 1), length(classes))
+    for (k, c) in pairs(known)
+        probabilities[:, column[c]] .= p_known[:, k]
+    end
+    labels = [known[argmax(view(p_known, i, :))] for i in axes(p_known, 1)]
+    return labels, probabilities
+end
+function predict_probabilities(m::LegendMLModel, wvfs::AbstractVector{<:RDWaveform}; kwargs...)
+    return predict_probabilities(m, features(m.features, wvfs); kwargs...)
+end
+export predict_probabilities

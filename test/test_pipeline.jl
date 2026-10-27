@@ -3,10 +3,12 @@
 using Test
 using LegendMachineLearning
 using LegendMachineLearning: features_config, run_qc_sampling, run_qc_training, UNLABELED, load_model,
-    file_sha256, qc_model_filename, write_sample, read_sample
+    file_sha256, qc_model_filename, write_sample, read_sample, train_svm, classify_filekey
 using PropDicts, StableRNGs, Unitful, IntervalSets
 using RadiationDetectorSignals
-using LegendDataManagement: FileKey, ChannelId, DetectorId, writelprops, readlprops
+using LegendDataManagement: LegendData, FileKey, ChannelId, DetectorId, DataTier, DataPeriod, DataRun,
+    writelprops, readlprops, search_disk, read_ldata
+using LegendTestData: legend_test_data_path
 
 @testset "features_config" begin
     fe = features_config(
@@ -88,5 +90,48 @@ end
             pars_stale;
             rng
         )
+    end
+end
+
+@testset "classify_filekey on LegendTestData" begin
+    # A probabilistic two-class model on Haar features of the 781-sample presummed
+    # waveforms; the classes are synthetic, the test checks the plumbing.
+    rng = StableRNG(4)
+    X = Float32.(vcat(-0.5 .+ 0.1 .* randn(rng, 30, 196), 0.5 .+ 0.1 .* randn(rng, 30, 196)))
+    y = vcat(fill(0, 30), fill(3, 30))
+    svm_cfg = PropDict(:cost => PropDict(:min => 1.0, :max => 1.0, :n => 1),
+        :gamma => PropDict(:min => 0.01, :max => 0.01, :n => 1), :n_folds => 3, :probability => true)
+    mach, _ = train_svm(X, y, svm_cfg; rng)
+    model = LegendMLModel(mach, HaarFeatures(n_samples = 196, bl_window = 0.0u"µs"..39.0u"µs"),
+        Dict(0 => :normal, 3 => :other), PropDict(:labels => y))
+    withenv("LEGEND_DATA_CONFIG" => joinpath(legend_test_data_path(), "data", "lh5", "prod-ref-l200", "config.json")) do
+        l200 = LegendData(:l200)
+        fk = first(search_disk(FileKey, l200.tier[DataTier(:raw), :cal, DataPeriod(18), DataRun(0)]))
+        det = DetectorId(:V97061A)
+        raw = read_ldata((:eventnumber, :timestamp, :daqenergy, :waveform_presummed), l200, DataTier(:raw), fk, det)
+
+        t = classify_filekey(l200, fk, model; detectors = ["V97061A"])
+        @test propertynames(t) ==
+              (:detector, :eventnumber, :timestamp, :daqenergy, :waveform, :label, :margin, :probabilities)
+        @test t.eventnumber == raw.eventnumber && t.timestamp == raw.timestamp && t.daqenergy == raw.daqenergy
+        @test all(==(det), t.detector)
+        @test t.waveform isa ArrayOfRDWaveforms
+        decoded = ArrayOfRDWaveforms([RDWaveform(w.time, Vector(w.signal)) for w in raw.waveform_presummed])
+        @test t.waveform.signal == decoded.signal
+        @test (t.label, t.margin) == predict_with_margin(model, decoded)
+        @test all(in((0, 3)), t.label) && all(m -> 0.5 ≤ m ≤ 1, t.margin)
+        @test reduce(hcat, t.probabilities) == permutedims(predict_probabilities(model, decoded)[2])
+        t3 = classify_filekey(l200, fk, model; detectors = [det], n_max_per_detector = 3, classes = [0, 1, 3])
+        @test all(p -> length(p) == 3 && p[2] == 0 && sum(p) ≈ 1, t3.probabilities)
+
+        # one block per detector entry; the cap draws a sorted subset of the events of the file
+        t2 = classify_filekey(l200, fk, model; detectors = [det, det], n_max_per_detector = 4, rng = StableRNG(1))
+        @test length(t2) == 8
+        first4 = t2.eventnumber[1:4]
+        @test issorted(first4) && first4 ⊆ raw.eventnumber
+        @test t2.waveform.signal[1:4] == decoded.signal[findall(in(first4), raw.eventnumber)]
+
+        @test_throws "not an aux trigger" classify_filekey(l200, fk, model; detectors = [det], exclude = [:pulser])
+        @test_throws "detectors is empty" classify_filekey(l200, fk, model; detectors = String[])
     end
 end
