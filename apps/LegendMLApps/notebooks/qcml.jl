@@ -673,8 +673,8 @@ save_message = let
 	else
 		save_clicks_handled[] = save_labels
 		if any(==(UNLABELED), exemplar_labels)
-			md"""**Not saved:** $(count(==(UNLABELED), exemplar_labels)) of
-			$(length(exemplar_labels)) exemplars are still unlabeled."""
+			Markdown.parse("**Not saved:** $(count(==(UNLABELED), exemplar_labels)) of " *
+				"$(length(exemplar_labels)) exemplars are still unlabeled.")
 		else
 			# The entry is read again so that fields written since the notebook loaded it (e.g. by
 			# the Train section) are kept.
@@ -695,8 +695,11 @@ save_message = let
 			end
 			entry.exemplar_labels = copy(exemplar_labels)
 			writelprops(pars_file, entry)
-			md"""Wrote $(length(exemplar_labels)) labels to `$pars_file` at
-			$(Dates.format(now(), "yyyy-mm-dd HH:MM:SS"))$(rescan ? ", and the re-scanned clustering to `$sample_file`" : "")."""
+			# Markdown.parse on an interpolated string: inside md"""...""", a span between two `$`
+			# is read as inline math and a `$name` can bind to a shorter variable.
+			Markdown.parse("Wrote $(length(exemplar_labels)) labels to `$(pars_file)` at " *
+				"$(Dates.format(now(), "yyyy-mm-dd HH:MM:SS"))" *
+				(rescan ? ", and the re-scanned clustering to `$(sample_file)`" : "") * ".")
 		end
 	end
 end
