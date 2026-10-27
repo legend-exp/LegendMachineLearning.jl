@@ -24,8 +24,13 @@ html"""
 			margin: 0 auto;
 			max-width: 2000px;
     		padding-left: max(28px, 5%);
-    		padding-right: max(38px, 5%); 
+    		padding-right: max(38px, 5%);
 		}
+	}
+	/* Save button of the relabeling section */
+	pluto-cell[id="6e7f391c-4fdf-42ad-bdd9-4bbc1cd472c6"] button {
+		font-size: 1.4em;
+		padding: 0.4em 1.6em;
 	}
 </style>
 """
@@ -72,10 +77,10 @@ produced by `LegendMachineLearning.run_qc_sampling` and stored in the `jlqml` ti
 1. **Preselection** — which detectors, strata and events the sampling step drew.
 2. **Clustering** — the affinity-propagation clustering stored with the sample, and
    an optional re-scan of the hyperparameter grid.
-3. **Relabeling** — assign a QC category to every cluster exemplar.
-4. **Save** — write the labels into the `exemplar_labels` of the entry.
-5. **Train** — train the SVM on the saved labels and store the model with the entry.
-6. **Check** — classify the events of any file of the period with the stored model.
+3. **Relabeling** — assign a QC category to every cluster exemplar and save the labels into
+   the `exemplar_labels` of the entry.
+4. **Train** — train the SVM on the saved labels and store the model with the entry.
+5. **Check** — classify the events of any file of the period with the stored model.
 """
 
 # ╔═╡ 9fe38889-7f7c-4575-9f23-4d967c786306
@@ -475,8 +480,8 @@ begin
 	#    You might need to adjust these to best fit the image and your layout.
 	#    Based on the previous image, these were 1500x900. You may need to inspect the SVG
 	#    or experiment to find the best dimensions.
-	image_width_px = 1200  # Desired display width of your image in pixels
-	image_height_px = 750 # Desired display height of your image in pixels
+	image_width_px = 960  # Desired display width of your image in pixels
+	image_height_px = 600 # Desired display height of your image in pixels
 	# --- End User Configuration ---
 	
 	# Use the URL directly as the image source
@@ -648,9 +653,8 @@ label_summary = let
 end
 
 # ╔═╡ 5c58b8fd-e65c-42fd-9740-0a71789cc467
-md"""## 4. Save
-
-Writing replaces `exemplar_labels` in the `rpars.ml` entry and keeps every other field. With
+md"""**Save** writes the labels of all exemplars to `exemplar_labels` in the `rpars.ml` entry
+and keeps every other field. With
 the re-scan on, the sample file receives the re-scanned clustering and the entry its parameters
 and the new file digest, so the training step accepts both files together.
 """
@@ -705,7 +709,7 @@ save_message = let
 end
 
 # ╔═╡ 3cc2be99-e2dc-458f-bc3c-3df7fb90dc18
-md"""## 5. Train
+md"""## 4. Train
 
 Train the SVM on the labels saved in the entry: the sample rows inherit the label of their
 cluster's exemplar. Training refuses while any exemplar is unlabeled or the labels (or a
@@ -785,7 +789,7 @@ else
 end
 
 # ╔═╡ f45abb0f-57c1-458a-acc7-5525128f06d8
-md"""## 6. Check
+md"""## 5. Check
 
 Classify the raw events of one file of the period with the model valid for it and look at
 the waveforms of each predicted category.
@@ -964,6 +968,10 @@ end
 # ╟─10588a11-9ebc-438d-a68d-6c6270373282
 # ╟─04c16587-c406-4ec2-a7a2-e621bf87ac2e
 # ╟─93374171-3072-4d3b-b847-c93e088866f2
+# ╟─5c58b8fd-e65c-42fd-9740-0a71789cc467
+# ╟─6e7f391c-4fdf-42ad-bdd9-4bbc1cd472c6
+# ╟─f17eb020-7f38-414f-8a9b-de2cd7defaaa
+# ╟─044acd11-6533-41c0-9650-e6e26d56a1c6
 # ╟─2cc81072-b7c1-4195-9a55-dc1f7ea17fa6
 # ╟─bab60ee2-1dcd-45d3-bd5f-dc2707a91861
 # ╟─bc963e67-3a70-40b6-9522-166680a29186
@@ -972,10 +980,6 @@ end
 # ╟─9b2a87a0-8865-4a6b-ab64-2fd1d50c811c
 # ╟─8bdad286-cc91-4390-a53f-c788d66bdc2f
 # ╟─b66a3846-123b-44b2-b2dc-47da08f23c42
-# ╟─5c58b8fd-e65c-42fd-9740-0a71789cc467
-# ╟─6e7f391c-4fdf-42ad-bdd9-4bbc1cd472c6
-# ╟─f17eb020-7f38-414f-8a9b-de2cd7defaaa
-# ╟─044acd11-6533-41c0-9650-e6e26d56a1c6
 # ╟─3cc2be99-e2dc-458f-bc3c-3df7fb90dc18
 # ╟─aebd9c03-74b9-4798-bf01-11b98d865f78
 # ╟─ff074e40-4c74-476d-9db4-50bef2e12312
