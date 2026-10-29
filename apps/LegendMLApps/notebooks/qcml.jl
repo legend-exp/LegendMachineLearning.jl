@@ -396,8 +396,8 @@ end
 # ╔═╡ 97c37d50-e030-4be2-b801-e0568396797f
 md"""## 3. Relabeling
 
-Step through the cluster exemplars, pick the QC category of each one from the chart, and
-confirm. The label of an exemplar is the label of every waveform in its cluster.
+Step through the cluster exemplars and click the QC category of each one in the chart; the
+click sets the label. The label of an exemplar is the label of every waveform in its cluster.
 """
 
 # ╔═╡ 1696f48b-9ee6-44a9-bc4b-c2213825f3fa
@@ -461,131 +461,52 @@ end
 
 
 # ╔═╡ 2cc81072-b7c1-4195-9a55-dc1f7ea17fa6
-md"""The chart shows all QC categories; select one by *clicking* on it, then confirm."""
+md"""Click a category to set the label of the current exemplar; the red frame marks its current label."""
 
 # ╔═╡ bab60ee2-1dcd-45d3-bd5f-dc2707a91861
 begin
-	default_category_value = exemplar_labels[exemplar_idx]
-	
-	# Cell 1: Setup and HTML/JS Generation for Interactive Image
-		
-	# --- User Configuration ---
-	# 1. URL of your image.
-	image_url = qc_categories_plot
-	
-	# 2. Specify the desired display dimensions of your image in pixels.
-	#    For SVG images, the browser will attempt to render it at its natural size
-	#    if width/height attributes are not set on the <img> tag.
-	#    However, setting them here helps define the size of the container for the clickable map.
-	#    You might need to adjust these to best fit the image and your layout.
-	#    Based on the previous image, these were 1500x900. You may need to inspect the SVG
-	#    or experiment to find the best dimensions.
-	image_width_px = 960  # Desired display width of your image in pixels
-	image_height_px = 600 # Desired display height of your image in pixels
-	# --- End User Configuration ---
-	
-	# Use the URL directly as the image source
-	image_src_attribute = image_url
-	
-	# Define the layout of categories. Each tuple is: (category_id, column_index, row_index)
-	# Column and row indices start from 0.
-	# This layout assumes:
-	# - Rows 0 and 1 have 5 plots each (columns 0 through 4)
-	# - Row 2 has 4 plots (columns 0 through 3)
-	categories_layout_config = [
-	    # id, col_idx, row_idx
-	    (0,  0, 0), (1,  1, 0), (2,  2, 0), (3,  3, 0), (4,  4, 0), # Row 0
-	    (5,  0, 1), (6,  1, 1), (7,  2, 1), (8,  3, 1), (9,  4, 1), # Row 1
-	    (10, 0.2, 2), (11, 1.5, 2), (12, 2.7, 2), (13, 3.9, 2)             # Row 2
-	]
-	
-	# Calculate approximate cell dimensions for the grid.
-	# These define the clickable areas.
-	# If your plots are not in a regular grid, you'll need to adjust coordinates manually.
-	num_grid_columns = 5
-	num_grid_rows = 3
-	single_cell_width = image_width_px / num_grid_columns
-	single_cell_height = image_height_px / num_grid_rows
-	
-	area_tags = map(categories_layout_config) do (id, col_idx, row_idx)
-	    x1 = round(Int, col_idx * single_cell_width)
-	    y1 = round(Int, row_idx * single_cell_height)
-	    x2 = round(Int, (col_idx + 1) * single_cell_width)
-	    y2 = round(Int, (row_idx + 1) * single_cell_height)
-	    coords_str = "$x1,$y1,$x2,$y2"
-	    
-	    @htl """<area shape="rect" coords=$(coords_str) href="#" onclick="setClickedCategoryValue(event, $id);" alt="Category $id" title="Category $id Info">"""
-	end
-	
-	main_interactive_div_id = "interactive_div_$(rand(UInt32))"
-	
-	# Ensure default_category_value exists; provide a fallback if not (though it should be defined above)
-	initial_value_for_js = if @isdefined(default_category_value)
-	    default_category_value
-	else
-	    0 # Fallback default if 'default_category_value' isn't defined, adjust as needed
-	end
-	
-	
-	html_interactive_image = @htl """
-	<div id=$(main_interactive_div_id) style="position:relative; width:$(image_width_px)px; height:$(image_height_px)px; border:1px solid #ccc;">
-	    <img src=$(image_url) usemap="#plot_categories_map" alt="Categorized Plots Overview" width=$(image_width_px) height=$(image_height_px) style="display: block;">
-	    <map name="plot_categories_map">
-	        $(area_tags)
-	    </map>
+	labels_reset_hash
+	# Clickable areas over the category chart: rows 0 and 1 hold five categories each, row 2
+	# holds four at fractional column offsets. The areas scale with the display size.
+	chart_width_px, chart_height_px = 640, 400
+	chart_layout = [(0, 0, 0), (1, 1, 0), (2, 2, 0), (3, 3, 0), (4, 4, 0),
+		(5, 0, 1), (6, 1, 1), (7, 2, 1), (8, 3, 1), (9, 4, 1),
+		(10, 0.2, 2), (11, 1.5, 2), (12, 2.7, 2), (13, 3.9, 2)]
+	chart_cell_w, chart_cell_h = chart_width_px / 5, chart_height_px / 3
+	chart_rects = Dict(string(id) => round.(Int, [c * chart_cell_w, r * chart_cell_h,
+		(c + 1) * chart_cell_w, (r + 1) * chart_cell_h]) for (id, c, r) in chart_layout)
+	chart_div_id = "qc_chart_$(rand(UInt32))"
+	chart_areas = [@htl("""<area shape="rect" coords=$(join(chart_rects[string(id)], ",")) href="#"
+		data-category=$(id) title=$("$id $(get(qc_category_table, id, ""))")>""") for (id, _, _) in chart_layout]
+	# A click sets the bond to [exemplar, category] right away; the red frame marks the
+	# current label of the exemplar.
+	@bind clicked_category @htl("""
+	<div id=$(chart_div_id) style="position:relative; width:$(chart_width_px)px; height:$(chart_height_px)px; border:1px solid #ccc;">
+		<img src=$(qc_categories_plot) usemap=$("#map_" * chart_div_id) width=$(chart_width_px) height=$(chart_height_px) style="display:block;">
+		<map name=$("map_" * chart_div_id)>$(chart_areas)</map>
+		<div class="qc-selected" style="position:absolute; border:3px solid #d62728; pointer-events:none; display:none;"></div>
 	</div>
-	
 	<script>
-	    // This IIFE runs as soon as this script tag is parsed.
-	    (function() {
-	        const interactiveDivId = $(main_interactive_div_id); 
-	        const initialDefaultValue = $(initial_value_for_js); // Get the default value from Julia
-	
-	        console.log("JS SCRIPT LOAD: Script for DIV ID:", interactiveDivId, "is running.");
-	        console.log("JS SCRIPT LOAD: Initial default value from Julia:", initialDefaultValue);
-	
-	        const divElementOnLoad = document.getElementById(interactiveDivId);
-	        if (divElementOnLoad) {
-	            console.log("JS INITIAL CHECK SUCCESS: Found DIV with ID '" + interactiveDivId + "'.", divElementOnLoad);
-	            
-	            // Set the initial default value on the DIV
-	            divElementOnLoad.value = initialDefaultValue;
-	            console.log("JS INITIAL SET: Set divElementOnLoad.value to default:", divElementOnLoad.value);
-	            
-	            // Dispatch an 'input' event so Pluto @bind picks up the initial default value
-	            divElementOnLoad.dispatchEvent(new Event('input', { bubbles: true }));
-	            console.log("JS INITIAL SET: Dispatched 'input' event on DIV for default value.");
-	
-	        } else {
-	            console.error("JS INITIAL CHECK FAILURE: Could NOT find DIV with ID '" + interactiveDivId + "'. This is critical.");
-	        }
-	
-	        window.setClickedCategoryValue = function(event, categoryNumber) {
-	            console.log("JS CLICK HANDLER: setClickedCategoryValue called with categoryNumber:", categoryNumber);
-	            console.log("JS CLICK HANDLER: Will target DIV with ID:", interactiveDivId);
-	
-	            if (event) {
-	                event.preventDefault(); 
-	            }
-	
-	            const targetDivElement = document.getElementById(interactiveDivId);
-	            if (targetDivElement) {
-	                console.log("JS CLICK HANDLER: Successfully found target DIV element:", targetDivElement);
-	                targetDivElement.value = categoryNumber;
-	                console.log("JS CLICK HANDLER: Set targetDivElement.value to:", targetDivElement.value);
-	                targetDivElement.dispatchEvent(new Event('input', { bubbles: true }));
-	                console.log("JS CLICK HANDLER: Dispatched 'input' event on DIV:", targetDivElement);
-	            } else {
-	                console.error("JS CLICK HANDLER ERROR: Could NOT find target DIV element with ID '" + interactiveDivId + "'.");
-	            }
-	            return false; 
-	        };
-	
-	        console.log("JS SCRIPT LOAD: setClickedCategoryValue function defined, targeting DIV ID:", interactiveDivId);
-	    })(); // End of IIFE
+		const div = document.getElementById($(chart_div_id));
+		const box = div.querySelector(".qc-selected");
+		const rects = $(chart_rects);
+		const show = (category) => {
+			const r = rects[String(category)];
+			if (!r) { box.style.display = "none"; return; }
+			box.style.left = r[0] + "px"; box.style.top = r[1] + "px";
+			box.style.width = (r[2] - r[0] - 6) + "px"; box.style.height = (r[3] - r[1] - 6) + "px";
+			box.style.display = "block";
+		};
+		show($(exemplar_labels[exemplar_idx]));
+		div.querySelectorAll("area").forEach(a => a.addEventListener("click", e => {
+			e.preventDefault();
+			const category = Number(a.dataset.category);
+			show(category);
+			div.value = [$(exemplar_idx), category];
+			div.dispatchEvent(new CustomEvent("input"));
+		}));
 	</script>
-	"""
-	@bind clicked_category_id confirm(html_interactive_image)
+	""")
 end
 
 # ╔═╡ bc963e67-3a70-40b6-9522-166680a29186
@@ -610,15 +531,13 @@ end
 
 # ╔═╡ 432efdbc-6e2c-4e23-b976-69ad583bb159
 begin
-	# The bond carries `missing` until a category is clicked and confirmed, which leaves
-	# the current label of the exemplar in place.
-	if clicked_category_id !== missing
-		exemplar_labels[exemplar_idx] = Int(clicked_category_id)
+	# The bond is `missing` until the first click and names the exemplar it was clicked for,
+	# so a click on one exemplar never relabels the next one after the slider moves.
+	if clicked_category !== missing && Int(clicked_category[1]) == exemplar_idx
+		exemplar_labels[exemplar_idx] = Int(clicked_category[2])
 	end
 	labels_hash = hash(exemplar_labels)
-	md"""Cluster **$exemplar_idx** ($(length(exemplar_members)) waveforms) label:
-	**$(exemplar_labels[exemplar_idx] == UNLABELED ? "unlabeled" : exemplar_labels[exemplar_idx])**"""
-end
+end;
 
 # ╔═╡ 9b2a87a0-8865-4a6b-ab64-2fd1d50c811c
 qc_category_table = qc_categories(ml_cfg)
@@ -963,6 +882,8 @@ end
 # ╟─e52c2578-acf0-4784-af0d-036780a52532
 # ╟─f3ed5af1-8c6b-469f-9799-1e73eaf8bf75
 # ╟─97c37d50-e030-4be2-b801-e0568396797f
+# ╟─2cc81072-b7c1-4195-9a55-dc1f7ea17fa6
+# ╟─bab60ee2-1dcd-45d3-bd5f-dc2707a91861
 # ╟─1696f48b-9ee6-44a9-bc4b-c2213825f3fa
 # ╟─5e7d2c91-4a8f-4b3e-a2d6-9f1c0e8b7a45
 # ╟─10588a11-9ebc-438d-a68d-6c6270373282
@@ -972,8 +893,6 @@ end
 # ╟─6e7f391c-4fdf-42ad-bdd9-4bbc1cd472c6
 # ╟─f17eb020-7f38-414f-8a9b-de2cd7defaaa
 # ╟─044acd11-6533-41c0-9650-e6e26d56a1c6
-# ╟─2cc81072-b7c1-4195-9a55-dc1f7ea17fa6
-# ╟─bab60ee2-1dcd-45d3-bd5f-dc2707a91861
 # ╟─bc963e67-3a70-40b6-9522-166680a29186
 # ╟─7117ccf8-3b2a-4fbd-8830-5080bb3143be
 # ╟─432efdbc-6e2c-4e23-b976-69ad583bb159
