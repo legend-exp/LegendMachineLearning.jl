@@ -531,9 +531,12 @@ end
 
 # ╔═╡ 432efdbc-6e2c-4e23-b976-69ad583bb159
 begin
-	# The bond is `missing` until the first click and names the exemplar it was clicked for,
-	# so a click on one exemplar never relabels the next one after the slider moves.
-	if clicked_category !== missing && Int(clicked_category[1]) == exemplar_idx
+	# The bond is `missing` before the browser sends a value and `nothing` while the chart has
+	# not been clicked (the browser sends the unset `div.value`). A click sends
+	# [exemplar, category], so a click on one exemplar never relabels the next one after the
+	# slider moves.
+	if !ismissing(clicked_category) && !isnothing(clicked_category) &&
+			Int(clicked_category[1]) == exemplar_idx
 		exemplar_labels[exemplar_idx] = Int(clicked_category[2])
 	end
 	labels_hash = hash(exemplar_labels)
